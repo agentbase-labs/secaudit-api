@@ -33,6 +33,15 @@ export class AppConfigService {
   }
 
   /**
+   * When true, registration sends a verification email and login refuses
+   * unverified accounts. When false (default), users are auto-verified on
+   * registration and can log in immediately.
+   */
+  get emailVerificationRequired(): boolean {
+    return this.get('EMAIL_VERIFICATION_REQUIRED');
+  }
+
+  /**
    * Whether TypeORM should negotiate TLS to Postgres. Defaults to true in
    * production (Render Postgres + most managed DBs require it) and false
    * locally, but the `DATABASE_SSL` env can override either way.

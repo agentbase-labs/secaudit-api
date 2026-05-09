@@ -31,12 +31,14 @@ export class UsersService {
     email: string;
     companyName: string | null;
     passwordHash: string;
+    emailVerified?: boolean;
   }): Promise<User> {
     const entity = this.repo.create({
       fullName: input.fullName,
       email: input.email.toLowerCase(),
       companyName: input.companyName,
       passwordHash: input.passwordHash,
+      ...(input.emailVerified !== undefined ? { emailVerified: input.emailVerified } : {}),
     });
     return this.repo.save(entity);
   }

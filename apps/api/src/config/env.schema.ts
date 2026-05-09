@@ -74,6 +74,13 @@ export const EnvSchema = z.object({
   QPDF_BINARY: z.string().default('qpdf'),
 
   FEATURES_AUTOSCAN: booleanString.default(false),
+
+  // When true, /auth/register issues a verification email and /auth/login
+  // refuses to sign in users whose email is not yet verified. When false
+  // (default), new users are flagged `emailVerified=true` on creation, no
+  // verification email is sent, and login skips the verified-email gate.
+  // Toggle on once a real outbound mail provider (Resend) is wired.
+  EMAIL_VERIFICATION_REQUIRED: booleanString.default(false),
 });
 
 export type AppEnv = z.infer<typeof EnvSchema>;

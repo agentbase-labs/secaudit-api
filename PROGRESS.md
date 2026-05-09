@@ -1,5 +1,48 @@
 # PROGRESS — What's Working, What's Scaffolded, What's Deferred
 
+## 🔧 Auth Hotfix — 2026-05-09
+
+**Two surgical fixes** to make production auth usable. Code only — no deploy yet.
+
+**Bug 1: Login stuck on `/login` after success.**
+- Root cause: middleware checked for the `refreshToken` cookie, which the API sets with `Path=/api/v1/auth` → the browser never sends it on `/dashboard`, so middleware always redirected back to `/login`.
+- Fix: introduced a `cs_session=1` presence-only marker cookie (no JWT, no PII). Set on login, refresh-rotation, and successful auto-login register; cleared on logout, refresh failure, and 401-not-recoverable. Middleware now checks `cs_session`. Login + register pages route admins to `/admin` and clients to `/dashboard` (or `next` query param if present).
+- The real refresh cookie is unchanged — still HttpOnly, path-scoped to `/api/v1/auth`, used for token rotation only.
+
+**Bug 2: Email verification gate blocking sign-in.**
+- ConsoleMail (Resend not wired) writes verification tokens to container stdout, so users can't actually verify. Per user instruction, gate is now off by default.
+- Added `EMAIL_VERIFICATION_REQUIRED` env var (default `false`).
+- When `false`: `/auth/register` flips `emailVerified=true` on creation, skips the verification email, and **auto-logs the user in** (returns `{ accessToken, user }` + sets refresh cookie). `/auth/login` no longer rejects unverified accounts. Net result: register → dashboard in one click.
+- When `true`: original behaviour preserved (verification email sent, login refuses unverified). Re-enable once Resend is wired.
+- `/auth/verify-email` endpoint and `/verify-email` page untouched — still work for backwards-compat.
+
+**Files modified (9):**
+- `apps/web/src/middleware.ts` — check `cs_session` instead of `refreshToken`; doc comment.
+- `apps/web/src/lib/auth.ts` — `setSessionMarker` / `clearSessionMarker` helpers; set/clear on login, logout, register-auto-login. New `RegisterResult` type covers both response shapes.
+- `apps/web/src/lib/api-client.ts` — set marker on refresh success, clear on refresh failure.
+- `apps/web/src/app/(auth)/login/page.tsx` — role-aware redirect (`admin` → `/admin`, else `/dashboard`).
+- `apps/web/src/app/(auth)/register/page.tsx` — handles both auto-login and verification-pending response shapes.
+- `apps/api/src/config/env.schema.ts` — added `EMAIL_VERIFICATION_REQUIRED` (booleanString, default `false`).
+- `apps/api/src/config/config.service.ts` — `emailVerificationRequired` accessor.
+- `apps/api/.env.example` — documented the new flag.
+- `apps/api/src/modules/auth/auth.service.ts` — register skips verification email + sets `emailVerified=true` + issues tokens when flag off; login skips the verified-email gate when flag off.
+- `apps/api/src/modules/auth/auth.controller.ts` — register endpoint sets refresh cookie + returns `{ accessToken, user }` when auto-logging in.
+- `apps/api/src/modules/users/users.service.ts` — `create()` accepts optional `emailVerified` (existing default behaviour preserved when omitted).
+
+**Quality gates (all green):** `pnpm -r typecheck` ✅ · `pnpm --filter @cs-platform/api build` ✅ · `pnpm --filter @cs-platform/web build` ✅. No new dependencies.
+
+**Deployment instructions for the user:**
+1. Backend env: add `EMAIL_VERIFICATION_REQUIRED=false` (or rely on the default). Then redeploy backend with the **full env block** — `redeploy-backend.cjs` strips env vars when called without `--env` (known footgun).
+2. Frontend env: no changes required. Redeploy frontend so the new middleware + login/register code ships.
+3. Existing users with `emailVerified=false` in the DB: they remain `false` (no auto-promote migration), but with the flag off they can now log in fine — the gate is skipped.
+
+**Risks / follow-ups:**
+- The `cs_session` cookie has `SameSite=Lax`, no JWT, no role data — strict presence flag. Even if read by JS it carries no auth value.
+- Re-enabling verification later: set `EMAIL_VERIFICATION_REQUIRED=true`, redeploy backend. Existing unverified users would then be forced through `/verify-email` again — may want a migration to bump them to verified before flipping.
+- When the frontend moves to `app.secaudit.xyz`, no cookie changes are needed (marker cookie is set client-side on whatever origin loaded the login page).
+
+---
+
 ## ✅ Deploy COMPLETE — 2026-05-09 (resume agent #3 — chunked commits)
 
 **Live URLs (all verified):**

@@ -41,15 +41,30 @@ export class AuthController {
   @Post('register')
   @HttpCode(HttpStatus.CREATED)
   @Throttle({ default: { limit: 5, ttl: 60 * 60 * 1000 } })
-  async register(@Body() dto: RegisterDto, @Req() req: Request) {
-    const { userId } = await this.auth.register({
+  async register(
+    @Body() dto: RegisterDto,
+    @Req() req: Request,
+    @Res({ passthrough: true }) res: Response,
+  ) {
+    const result = await this.auth.register({
       fullName: dto.fullName,
       email: dto.email,
       password: dto.password,
       companyName: dto.companyName,
       ip: req.ip ?? null,
     });
-    return { userId, message: 'Verification email sent' };
+    if (result.autoLogin) {
+      // Email verification disabled → register-and-sign-in. Issue the
+      // refresh cookie + return the same shape as /auth/login so the
+      // frontend can redirect straight to the dashboard.
+      setRefreshCookie(res, result.tokens.refreshToken, result.tokens.refreshExpiresAt);
+      return {
+        userId: result.userId,
+        accessToken: result.tokens.accessToken,
+        user: result.user,
+      };
+    }
+    return { userId: result.userId, message: 'Verification email sent' };
   }
 
   @Public()

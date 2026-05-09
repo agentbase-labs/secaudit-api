@@ -67,7 +67,10 @@ export class AuthService {
     password: string;
     companyName?: string;
     ip?: string | null;
-  }): Promise<{ userId: string }> {
+  }): Promise<
+    | { userId: string; autoLogin: false }
+    | { userId: string; autoLogin: true; user: PublicUser; tokens: IssuedTokens }
+  > {
     const email = input.email.toLowerCase();
     const existing = await this.users.findByEmail(email);
     if (existing) {
@@ -77,14 +80,18 @@ export class AuthService {
       });
     }
     const passwordHash = await hashPassword(input.password);
+    const verificationRequired = this.cfg.emailVerificationRequired;
     const user = await this.users.create({
       fullName: input.fullName,
       email,
       companyName: input.companyName?.trim() || null,
       passwordHash,
+      emailVerified: !verificationRequired,
     });
 
-    await this.issueEmailVerification(user.id, user.email, user.fullName);
+    if (verificationRequired) {
+      await this.issueEmailVerification(user.id, user.email, user.fullName);
+    }
 
     await this.audit.record({
       actorUserId: user.id,
@@ -93,7 +100,31 @@ export class AuthService {
       meta: { email: user.email },
     });
 
-    return { userId: user.id };
+    if (verificationRequired) {
+      return { userId: user.id, autoLogin: false };
+    }
+
+    // Auto-login: issue the same token pair `login()` would and let the
+    // controller set the refresh cookie. Audit as a login so the trail is
+    // consistent with normal sign-in.
+    const tokens = await this.issueTokenPair(
+      user.id,
+      user.email,
+      user.role,
+      user.emailVerified,
+    );
+    await this.audit.record({
+      actorUserId: user.id,
+      action: 'user.login',
+      ip: input.ip ?? null,
+      meta: { via: 'register' },
+    });
+    return {
+      userId: user.id,
+      autoLogin: true,
+      user: this.users.toPublic(user),
+      tokens,
+    };
   }
 
   private async issueEmailVerification(
@@ -184,7 +215,7 @@ export class AuthService {
         message: 'Account disabled',
       });
     }
-    if (!user.emailVerified) {
+    if (this.cfg.emailVerificationRequired && !user.emailVerified) {
       throw new ForbiddenException({
         error: ApiErrorCodes.EMAIL_NOT_VERIFIED,
         message: 'Email not verified',
