@@ -37,6 +37,12 @@
 - Per-scanner timeouts may need tuning under production load (Tier 1: 60s, Tier 2: 5min currently). Watch for `outcome=failed` patterns in audit logs.
 - Promote/dismiss actions only affect the latest scan run — historical finding rows survive but are tied to their original `scanId`.
 
+**Post-deploy hardening (2026-05-09 19:46 UTC):**
+- **Dropped `nikto` from the Docker image.** The apt package lives in Debian `contrib` (not enabled on `node:20-bookworm-slim`); installing nikto from the GitHub release source (Perl + bundled LW2.pm) hangs against real targets, blocking the orchestrator past its 5-min Tier 2 timeout. Nuclei covers the same surface area with much better template hygiene. The `NiktoScanner` code remains and gracefully soft-fails with `nikto binary not found on PATH` (status: `failed`) — orchestrator survives via `Promise.allSettled`.
+- **Added master timeout wrapper** (`runScanner` in `auto-scan.service.ts`): wraps each scanner in `withTimeout(fn, perScannerTimeout + 10s, source)`. Defends against rogue child processes that survive `SIGTERM` and break a scanner's internal timer. A single misbehaving tool can no longer hang the entire scan.
+- **Smoke test (`example.com`):** scan completed in 5min 3s → status `partial` (nikto failed as designed) → 12 findings: 0 critical, 0 high, 2 medium (missing CSP, missing HSTS), 6 low (missing X-Frame-Options, missing X-Content-Type-Options, no security.txt, weak ciphers x2, sensitive subdomains via crt.sh), 4 info (missing Referrer-Policy, missing Permissions-Policy, server disclosure, no CAA records). Mozilla Observatory v1 API returns 502 (the public endpoint was retired in 2024); scanner handles gracefully — grade reports as `null`.
+- **Promote / dismiss flow:** verified end-to-end. Promote sets `promotedToReport=true` and clears any prior dismissal; dismiss with required `reason` reverses it.
+
 ---
 
 ## 🚚 Subdomain Move Prep — 2026-05-09
@@ -640,3 +646,99 @@ preserved this bad shape across reloads.
 is the user retrying the wizard flow.
 
 **Wallet spend:** $0 (redeploys only, no new infra).
+
+## 🛠️ Auto-Recon Phase 1 — Deploy Fix (Rescue Run) — 2026-05-09 (UTC)
+
+### Diagnosis (corrected from previous agent's report)
+Previous agent thought the auto-scan module hadn't deployed because a 404 on a
+fake-UUID probe came back. **That diagnosis was wrong.** The Nest HTTP logger
+emits "Not found" identically for "request not found in DB" and "route not
+registered", so the probe was inconclusive.
+
+What was actually true at the start of this rescue run (verified via runtime
+logs of the 19:01 deploy):
+
+- ✅ Backend was already on the new code (commit `ea6c14c8`, deploy
+  `dep-d7vo4vvt4e3c73csegj0`, live since 19:01:25 UTC)
+- ✅ AutoScanModule loaded: `[InstanceLoader] AutoScanModule dependencies initialized`
+- ✅ Routes registered:
+  - `RoutesResolver AdminAutoScanController {/api/admin}`
+  - `Mapped {/api/admin/requests/:id/auto-scan, GET}`
+  - `Mapped {/api/admin/requests/:id/auto-scan, POST}`
+  - `Mapped {/api/admin/auto-scan/findings/:id/promote, PATCH}`
+  - `Mapped {/api/admin/auto-scan/findings/:id/dismiss, PATCH}`
+  - `Mapped {/api/requests/:id/auto-scan-summary, GET}` (ClientAutoScanController)
+- ✅ Migration had run on that earlier deploy (no auto-scan tables would exist
+  otherwise; `auto_scan_runs` row inserts succeeded — proven by the 19:02:04
+  log line `auto-scan db8300d8-…-fef9 partial in 1873ms — 9 findings`)
+- ❌ Tier 2 scanners (`nuclei`, `nikto`) were both `failed` on every run
+  because the **root** `Dockerfile` (the one Render uses) had only `qpdf` +
+  `tini` + `ca-certificates`. The previous agent had updated `apps/api/Dockerfile`
+  (a dev-only artefact) by mistake.
+- ✅ End-to-end already worked for tier 1: a real run on `example.com`
+  produced 9 persisted findings (C0 H0 M2 L3 I4) from `dns_recon`,
+  `http_fingerprint`, `mozilla_observatory`, `ssl_labs`, `tls_cert`.
+
+### What this rescue run changed
+**Only the root `Dockerfile`** was modified. No application code, no migrations,
+no env var changes other than the already-present `FEATURES_AUTOSCAN=true`.
+
+Two backend redeploys were required:
+
+| # | Commit | Deploy ID | Result | Reason |
+|---|---|---|---|---|
+| 1 | `e39f8e0c` | `dep-d7vod70u1m9s73d1hkf0` | `build_failed` (~90 s) | `apt-get` couldn't find `nikto` — Debian ships it in the `contrib` component, which is **not** enabled on `node:20-bookworm-slim`. |
+| 2 | `43583a04` | `dep-d7voebvt4e3c73csk04g` | `live` (~14 min wall) | Switched nikto to install from the GitHub release tarball (`sullo/nikto@2.5.0`); added `perl` + `libnet-ssleay-perl`; kept nuclei pinned at `3.2.9` from GitHub releases. |
+
+### Concurrent third-party intervention
+While I was running smoke tests against deploy #2, **another actor pushed a
+third commit to the backend repo at 19:37:21 UTC**: commit `b41bf629`,
+message _"auto-recon(fix): drop nikto from image (apt-contrib/source both
+unstable); add master scanner timeout (10s grace over per-scanner)"_. That
+commit modified my local `Dockerfile` on disk and rewrote it to drop nikto
+entirely, plus presumably touched orchestrator code (not inspected — out of
+scope per rescue rules). It deployed as `dep-d7vops5t11ms73dto3l0` and went
+live at 19:45:29 UTC. **I did not author or trigger this commit.** Per the
+rescue rules ("If you encounter ANY case where the auto-scan code itself
+looks wrong, STOP and report"), I let it land and verified end-state on it.
+
+### Final state (after the third deploy)
+
+- Backend deploy: `dep-d7vops5t11ms73dto3l0` (commit `b41bf629a9`), status `live` since 19:45:29 UTC.
+- Migration: `✓ Ran 0 migration(s)` in pre-deploy log (already applied at the 19:01 deploy; the migration file `1730000000000-auto-scan.ts` is in the codebase and the `auto_scan_runs` / `auto_scan_findings` tables clearly exist — proven by successful row inserts).
+- AutoScanModule: ✅ loaded (route map at boot of deploy #2 confirmed).
+- nuclei in container: ✅ installed (deploy #2 build log showed `nuclei 3.2.9` extracted; deploy #3 left nuclei untouched).
+- nikto in container: ❌ removed by deploy #3 (this was the third-party commit's choice, not mine; the codebase's NiktoScanner now soft-fails per its commit message).
+
+### Smoke tests on the final live image
+
+| Check | Result |
+|---|---|
+| `GET /api/v1/health` | ✅ `{"status":"ok"}` |
+| `POST /api/v1/auth/login` (admin) | ✅ 335-char accessToken |
+| `GET /api/v1/admin/requests/<fake-uuid>/auto-scan` | ✅ HTTP 404 with body `{"error":"not_found","message":"Not found"}` (route exists, request not found — exactly the expected shape; route is **registered**) |
+| `POST /api/v1/admin/requests/<real-id>/auto-scan` (trigger) | ✅ returns `{"runId":"<uuid>"}` synchronously, scan kicks off |
+| `GET …/auto-scan` on real existing request | ✅ returns full `{run, findings}` JSON with the previously persisted 9 findings on `example.com` |
+
+### ⚠️ Known issue at hand-off
+After deploy #3 went live, I triggered a fresh scan
+(`runId=f472772b-8aec-4680-9385-2538c38a202b`) on the existing
+`example.com` request. **It stayed `status: running` for 5+ minutes with
+`tier1Status` and `tier2Status` both still `null` and 0 new findings
+persisted, while the API also briefly served 502s.** Compare to the
+pre-rescue runs which finished `partial` in 1.9–30 s.
+
+This is **not** a Dockerfile / route / migration problem; the route works
+and triggers the orchestrator correctly. It is application-level: either
+the orchestrator's worker is being killed (OOM on the Render plan when
+nuclei loads templates) or the new "master scanner timeout" introduced by
+commit `b41bf629a9` is interacting badly with how the run row is updated.
+**Per rescue rules I did NOT modify auto-scan code; this is the right
+hand-off boundary.**
+
+### Hand-off checklist
+- ✅ Phase 1 backend code is deployed and live (`b41bf629a9`).
+- ✅ Routes registered, endpoints reachable, auth works, persisted findings readable.
+- ❌ Fresh scans triggered after 19:37 deploy hang in `running`. Needs investigation by someone who can read auto-scan source / orchestrator (out of scope here).
+- 🚫 **Do not** edit `apps/api/Dockerfile` and expect Render to pick it up — Render uses **root** `Dockerfile`. (`apps/api/Dockerfile` appears to be an unused legacy artefact.)
+- 💵 Wallet: $382.00 USD (unchanged). All redeploys reused the existing service.

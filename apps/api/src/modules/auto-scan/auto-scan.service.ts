@@ -345,8 +345,13 @@ export class AutoScanService {
     masterTimeoutMs: number,
   ): Promise<ScannerResult> {
     const started = Date.now();
+    this.logger.log(`scanner ${source} starting (master timeout ${masterTimeoutMs}ms)`);
     try {
-      return await withTimeout(fn(), masterTimeoutMs, source);
+      const r = await withTimeout(fn(), masterTimeoutMs, source);
+      this.logger.log(
+        `scanner ${source} → ${r.outcome} (${r.findings.length} findings, ${r.durationMs}ms)`,
+      );
+      return r;
     } catch (err) {
       this.logger.warn(
         `scanner ${source} master-timed-out: ${(err as Error).message}`,
