@@ -1,0 +1,421 @@
+import {
+  BadRequestException,
+  ConflictException,
+  ForbiddenException,
+  GoneException,
+  Inject,
+  Injectable,
+  Logger,
+  UnauthorizedException,
+} from '@nestjs/common';
+import { JwtService } from '@nestjs/jwt';
+import { InjectRepository } from '@nestjs/typeorm';
+import { randomUUID } from 'crypto';
+import { Repository } from 'typeorm';
+import { ApiErrorCodes } from '@cs-platform/shared';
+import type { PublicUser } from '@cs-platform/shared';
+
+import { AppConfigService } from '../../config/config.service';
+import { hashPassword, needsRehash, verifyPassword } from '../../common/utils/password';
+import { generateRandomToken, sha256 } from '../../common/utils/tokens';
+import { MAIL_SERVICE } from '../mail/mail.service';
+import type { MailService } from '../mail/mail.service';
+import { AuditService } from '../audit/audit.service';
+import { UsersService } from '../users/users.service';
+import { EmailVerificationToken } from './entities/email-verification-token.entity';
+import { PasswordResetToken } from './entities/password-reset-token.entity';
+import { RefreshToken } from './entities/refresh-token.entity';
+import type { AccessTokenPayload } from './strategies/jwt.strategy';
+
+export interface RefreshTokenPayload {
+  sub: string;
+  jti: string;
+  fam: string;
+  iat?: number;
+  exp?: number;
+}
+
+export interface IssuedTokens {
+  accessToken: string;
+  refreshToken: string;
+  refreshExpiresAt: Date;
+}
+
+@Injectable()
+export class AuthService {
+  private readonly logger = new Logger(AuthService.name);
+
+  constructor(
+    private readonly users: UsersService,
+    private readonly jwt: JwtService,
+    private readonly cfg: AppConfigService,
+    private readonly audit: AuditService,
+    @Inject(MAIL_SERVICE) private readonly mail: MailService,
+    @InjectRepository(EmailVerificationToken)
+    private readonly evtRepo: Repository<EmailVerificationToken>,
+    @InjectRepository(PasswordResetToken)
+    private readonly prtRepo: Repository<PasswordResetToken>,
+    @InjectRepository(RefreshToken)
+    private readonly rtRepo: Repository<RefreshToken>,
+  ) {}
+
+  // ---------------- Register ----------------
+
+  async register(input: {
+    fullName: string;
+    email: string;
+    password: string;
+    companyName?: string;
+    ip?: string | null;
+  }): Promise<{ userId: string }> {
+    const email = input.email.toLowerCase();
+    const existing = await this.users.findByEmail(email);
+    if (existing) {
+      throw new ConflictException({
+        error: ApiErrorCodes.EMAIL_TAKEN,
+        message: 'Email already registered',
+      });
+    }
+    const passwordHash = await hashPassword(input.password);
+    const user = await this.users.create({
+      fullName: input.fullName,
+      email,
+      companyName: input.companyName?.trim() || null,
+      passwordHash,
+    });
+
+    await this.issueEmailVerification(user.id, user.email, user.fullName);
+
+    await this.audit.record({
+      actorUserId: user.id,
+      action: 'user.register',
+      ip: input.ip ?? null,
+      meta: { email: user.email },
+    });
+
+    return { userId: user.id };
+  }
+
+  private async issueEmailVerification(
+    userId: string,
+    email: string,
+    fullName: string,
+  ): Promise<void> {
+    const token = generateRandomToken(32);
+    const tokenHash = sha256(token);
+    const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000);
+    await this.evtRepo.insert({ userId, tokenHash, expiresAt });
+
+    const verifyUrl = `${this.cfg.get('APP_URL')}/verify-email?token=${encodeURIComponent(token)}`;
+    await this.mail
+      .sendTemplate({
+        to: email,
+        template: 'verify-email',
+        data: { fullName, verifyUrl, expiresHours: 24 },
+      })
+      .catch((e) => this.logger.warn(`verify-email send failed: ${(e as Error).message}`));
+  }
+
+  async resendVerification(email: string): Promise<void> {
+    const user = await this.users.findByEmail(email);
+    if (!user || user.emailVerified) return;
+    await this.issueEmailVerification(user.id, user.email, user.fullName);
+  }
+
+  async verifyEmail(token: string): Promise<void> {
+    const tokenHash = sha256(token);
+    const row = await this.evtRepo.findOne({ where: { tokenHash } });
+    if (!row) {
+      throw new BadRequestException({
+        error: ApiErrorCodes.TOKEN_INVALID,
+        message: 'Invalid token',
+      });
+    }
+    if (row.expiresAt.getTime() < Date.now()) {
+      await this.evtRepo.delete(row.id);
+      throw new GoneException({
+        error: ApiErrorCodes.TOKEN_EXPIRED,
+        message: 'Token expired',
+      });
+    }
+    await this.users.markEmailVerified(row.userId);
+    await this.evtRepo.delete({ userId: row.userId });
+    await this.audit.record({
+      actorUserId: row.userId,
+      action: 'user.verify_email',
+    });
+  }
+
+  // ---------------- Login / tokens ----------------
+
+  async login(input: {
+    email: string;
+    password: string;
+    ip?: string | null;
+  }): Promise<{ user: PublicUser; tokens: IssuedTokens }> {
+    const email = input.email.toLowerCase();
+    const user = await this.users.findByEmail(email);
+    if (!user) {
+      await this.audit.record({
+        action: 'user.login_failed',
+        ip: input.ip ?? null,
+        meta: { email },
+      });
+      throw new UnauthorizedException({
+        error: ApiErrorCodes.INVALID_CREDENTIALS,
+        message: 'Invalid credentials',
+      });
+    }
+    const ok = await verifyPassword(user.passwordHash, input.password);
+    if (!ok) {
+      await this.audit.record({
+        actorUserId: user.id,
+        action: 'user.login_failed',
+        ip: input.ip ?? null,
+      });
+      throw new UnauthorizedException({
+        error: ApiErrorCodes.INVALID_CREDENTIALS,
+        message: 'Invalid credentials',
+      });
+    }
+    if (user.disabled) {
+      throw new ForbiddenException({
+        error: ApiErrorCodes.ACCOUNT_DISABLED,
+        message: 'Account disabled',
+      });
+    }
+    if (!user.emailVerified) {
+      throw new ForbiddenException({
+        error: ApiErrorCodes.EMAIL_NOT_VERIFIED,
+        message: 'Email not verified',
+      });
+    }
+
+    if (needsRehash(user.passwordHash)) {
+      await this.users.updatePasswordHash(user.id, await hashPassword(input.password));
+    }
+
+    const tokens = await this.issueTokenPair(user.id, user.email, user.role, user.emailVerified);
+
+    await this.audit.record({
+      actorUserId: user.id,
+      action: 'user.login',
+      ip: input.ip ?? null,
+    });
+
+    return { user: this.users.toPublic(user), tokens };
+  }
+
+  private async issueTokenPair(
+    userId: string,
+    email: string,
+    role: string,
+    emailVerified: boolean,
+    existingFamily?: string,
+  ): Promise<IssuedTokens> {
+    const family = existingFamily ?? randomUUID();
+    const jti = randomUUID();
+
+    const accessPayload: AccessTokenPayload = {
+      sub: userId,
+      role,
+      emailVerified,
+      jti,
+      email,
+    };
+    const accessToken = await this.jwt.signAsync(accessPayload, {
+      secret: this.cfg.get('JWT_ACCESS_SECRET'),
+      expiresIn: this.cfg.get('JWT_ACCESS_TTL'),
+    });
+
+    const refreshPayload: RefreshTokenPayload = {
+      sub: userId,
+      jti,
+      fam: family,
+    };
+    const refreshToken = await this.jwt.signAsync(refreshPayload, {
+      secret: this.cfg.get('JWT_REFRESH_SECRET'),
+      expiresIn: this.cfg.get('JWT_REFRESH_TTL'),
+    });
+
+    // Persist the new refresh token row
+    const refreshTtlMs = parseTtlMs(this.cfg.get('JWT_REFRESH_TTL')) ?? 7 * 24 * 60 * 60 * 1000;
+    const expiresAt = new Date(Date.now() + refreshTtlMs);
+    await this.rtRepo.insert({
+      userId,
+      family,
+      jti,
+      tokenHash: sha256(refreshToken),
+      expiresAt,
+    });
+
+    return { accessToken, refreshToken, refreshExpiresAt: expiresAt };
+  }
+
+  async refresh(refreshToken: string): Promise<IssuedTokens & { user: PublicUser }> {
+    let payload: RefreshTokenPayload;
+    try {
+      payload = await this.jwt.verifyAsync<RefreshTokenPayload>(refreshToken, {
+        secret: this.cfg.get('JWT_REFRESH_SECRET'),
+      });
+    } catch {
+      throw new UnauthorizedException({
+        error: ApiErrorCodes.REFRESH_INVALID,
+        message: 'Invalid refresh token',
+      });
+    }
+    const row = await this.rtRepo.findOne({ where: { jti: payload.jti } });
+    if (!row) {
+      // Unknown jti → revoke family if we can find it
+      await this.rtRepo.update({ family: payload.fam }, { revokedAt: new Date() });
+      await this.audit.record({
+        actorUserId: payload.sub,
+        action: 'user.refresh_reuse_detected',
+      });
+      throw new UnauthorizedException({
+        error: ApiErrorCodes.REFRESH_INVALID,
+        message: 'Refresh token not recognized',
+      });
+    }
+    if (row.revokedAt || row.replacedByJti) {
+      // Reuse of a rotated token → compromise → revoke family
+      await this.rtRepo.update({ family: row.family }, { revokedAt: new Date() });
+      await this.audit.record({
+        actorUserId: payload.sub,
+        action: 'user.refresh_reuse_detected',
+      });
+      throw new UnauthorizedException({
+        error: ApiErrorCodes.REFRESH_INVALID,
+        message: 'Refresh token reuse detected',
+      });
+    }
+    if (row.expiresAt.getTime() < Date.now()) {
+      throw new UnauthorizedException({
+        error: ApiErrorCodes.REFRESH_INVALID,
+        message: 'Refresh token expired',
+      });
+    }
+    if (sha256(refreshToken) !== row.tokenHash) {
+      throw new UnauthorizedException({
+        error: ApiErrorCodes.REFRESH_INVALID,
+        message: 'Refresh token mismatch',
+      });
+    }
+
+    const user = await this.users.requireById(payload.sub);
+    if (user.disabled) {
+      throw new ForbiddenException({
+        error: ApiErrorCodes.ACCOUNT_DISABLED,
+        message: 'Account disabled',
+      });
+    }
+
+    const tokens = await this.issueTokenPair(
+      user.id,
+      user.email,
+      user.role,
+      user.emailVerified,
+      row.family,
+    );
+    const newJti =
+      (this.jwt.decode(tokens.refreshToken) as RefreshTokenPayload | null)?.jti ?? null;
+    await this.rtRepo.update(row.id, {
+      replacedByJti: newJti,
+      revokedAt: new Date(),
+    });
+    await this.audit.record({
+      actorUserId: user.id,
+      action: 'user.refresh_rotated',
+    });
+
+    return { user: this.users.toPublic(user), ...tokens };
+  }
+
+  async logout(refreshToken: string | undefined, userId: string | undefined): Promise<void> {
+    if (refreshToken) {
+      try {
+        const payload = await this.jwt.verifyAsync<RefreshTokenPayload>(refreshToken, {
+          secret: this.cfg.get('JWT_REFRESH_SECRET'),
+        });
+        await this.rtRepo.update(
+          { jti: payload.jti },
+          { revokedAt: new Date() },
+        );
+      } catch {
+        /* ignore invalid refresh */
+      }
+    }
+    if (userId) {
+      await this.audit.record({ actorUserId: userId, action: 'user.logout' });
+    }
+  }
+
+  // ---------------- Password reset ----------------
+
+  async forgotPassword(email: string): Promise<void> {
+    const user = await this.users.findByEmail(email);
+    if (!user) return; // no enumeration
+    const token = generateRandomToken(32);
+    const tokenHash = sha256(token);
+    const expiresAt = new Date(Date.now() + 60 * 60 * 1000);
+    await this.prtRepo.insert({ userId: user.id, tokenHash, expiresAt, usedAt: null });
+    const resetUrl = `${this.cfg.get('APP_URL')}/reset-password?token=${encodeURIComponent(token)}`;
+    await this.mail
+      .sendTemplate({
+        to: user.email,
+        template: 'password-reset',
+        data: { fullName: user.fullName, resetUrl, expiresHours: 1 },
+      })
+      .catch((e) => this.logger.warn(`password-reset send failed: ${(e as Error).message}`));
+  }
+
+  async resetPassword(token: string, newPassword: string): Promise<void> {
+    const tokenHash = sha256(token);
+    const row = await this.prtRepo.findOne({ where: { tokenHash } });
+    if (!row) {
+      throw new BadRequestException({
+        error: ApiErrorCodes.TOKEN_INVALID,
+        message: 'Invalid token',
+      });
+    }
+    if (row.usedAt) {
+      throw new BadRequestException({
+        error: ApiErrorCodes.TOKEN_INVALID,
+        message: 'Token already used',
+      });
+    }
+    if (row.expiresAt.getTime() < Date.now()) {
+      throw new GoneException({
+        error: ApiErrorCodes.TOKEN_EXPIRED,
+        message: 'Token expired',
+      });
+    }
+    const passwordHash = await hashPassword(newPassword);
+    await this.users.updatePasswordHash(row.userId, passwordHash);
+    await this.prtRepo.update(row.id, { usedAt: new Date() });
+    // Invalidate all refresh tokens for this user
+    await this.rtRepo.update({ userId: row.userId }, { revokedAt: new Date() });
+    await this.audit.record({
+      actorUserId: row.userId,
+      action: 'user.reset_password',
+    });
+  }
+}
+
+function parseTtlMs(ttl: string): number | null {
+  const m = /^(\d+)([smhd])$/.exec(ttl.trim());
+  if (!m) return null;
+  const n = Number(m[1]);
+  switch (m[2]) {
+    case 's':
+      return n * 1000;
+    case 'm':
+      return n * 60 * 1000;
+    case 'h':
+      return n * 60 * 60 * 1000;
+    case 'd':
+      return n * 24 * 60 * 60 * 1000;
+    default:
+      return null;
+  }
+}
