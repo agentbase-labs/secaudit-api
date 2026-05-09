@@ -1,0 +1,31 @@
+version: '3.9'
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: cs-platform-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: cs_platform
+    ports:
+      - '5432:5432'
+    volumes:
+      - cs_platform_pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U postgres -d cs_platform']
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    # Optional — only needed for Phase 2 + Redis-backed throttler storage
+    image: redis:7-alpine
+    container_name: cs-platform-redis
+    restart: unless-stopped
+    ports:
+      - '6379:6379'
+
+volumes:
+  cs_platform_pg:
