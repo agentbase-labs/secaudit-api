@@ -1,6 +1,8 @@
 import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { AppConfigService } from '../config/config.service';
+import { User } from '../modules/users/entities/user.entity';
+import { AdminBootstrapService } from './admin-bootstrap.service';
 import * as path from 'path';
 
 @Module({
@@ -22,6 +24,8 @@ import * as path from 'path';
         logging: cfg.isProd ? ['error'] : ['error', 'warn'],
       }),
     }),
+    TypeOrmModule.forFeature([User]),
   ],
+  providers: [AdminBootstrapService],
 })
 export class DatabaseModule {}
