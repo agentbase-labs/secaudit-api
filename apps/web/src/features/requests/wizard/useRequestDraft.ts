@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
-import type { WizardState } from './types';
+import { sanitizeDetailsForAssetType, type WizardState } from './types';
 
 const DRAFT_KEY = 'cs-platform:request-draft:v1';
 
@@ -30,7 +30,17 @@ export function useRequestDraft(
       if (!raw) return;
       const parsed = JSON.parse(raw) as { savedAt: string; state: WizardState } | null;
       if (parsed?.state && parsed.state.assetType !== undefined) {
-        onRestore(parsed.state);
+        // Defensive: drafts saved before the assetType-reset fix may carry
+        // fields that don't belong to the saved assetType. Strip them so the
+        // Review step / submit payload don't leak stale data.
+        const sanitized: WizardState = {
+          ...parsed.state,
+          details: sanitizeDetailsForAssetType(
+            parsed.state.assetType,
+            parsed.state.details,
+          ),
+        };
+        onRestore(sanitized);
         setRestoredAt(new Date(parsed.savedAt));
         setBannerVisible(true);
       }

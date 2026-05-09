@@ -1,8 +1,9 @@
 'use client';
 
+import { useMemo } from 'react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import type { WizardState } from './types';
+import { sanitizeDetailsForAssetType, type WizardState } from './types';
 
 interface Step3Props {
   state: WizardState;
@@ -12,6 +13,12 @@ interface Step3Props {
 }
 
 export function Step3Review({ state, isSubmitting, onBack, onSubmit }: Step3Props) {
+  // Only show fields that belong to the current assetType. Defensive against
+  // any path where stale fields from a previous type could survive in state.
+  const displayDetails = useMemo(
+    () => sanitizeDetailsForAssetType(state.assetType, state.details),
+    [state.assetType, state.details],
+  );
   return (
     <Card>
       <CardHeader>
@@ -37,7 +44,7 @@ export function Step3Review({ state, isSubmitting, onBack, onSubmit }: Step3Prop
             Target details
           </p>
           <pre className="bg-muted overflow-auto rounded-md p-3 text-xs">
-            {JSON.stringify(state.details, null, 2)}
+            {JSON.stringify(displayDetails, null, 2)}
           </pre>
         </div>
         <div className="flex justify-between pt-2">

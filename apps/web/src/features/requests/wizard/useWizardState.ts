@@ -3,6 +3,7 @@
 import { useReducer, useCallback } from 'react';
 import {
   INITIAL_STATE,
+  getEmptyDetailsForAssetType,
   type WizardAction,
   type WizardState,
   type WizardStepId,
@@ -10,8 +11,19 @@ import {
 
 function reducer(state: WizardState, action: WizardAction): WizardState {
   switch (action.type) {
-    case 'set':
-      return { ...state, ...action.patch };
+    case 'set': {
+      // When assetType changes, reset `details` to the empty shape for the new
+      // type so we never leak fields from the previous asset type into the
+      // submission payload (e.g. mobile fields surviving a switch to website).
+      const next = { ...state, ...action.patch };
+      if (
+        'assetType' in action.patch &&
+        action.patch.assetType !== state.assetType
+      ) {
+        next.details = getEmptyDetailsForAssetType(action.patch.assetType ?? null);
+      }
+      return next;
+    }
     case 'set-details':
       return { ...state, details: { ...state.details, ...action.patch } };
     case 'goto': {
