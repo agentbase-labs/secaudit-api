@@ -46,11 +46,21 @@ RUN pnpm --filter @cs-platform/shared build \
 FROM node:20-bookworm-slim AS runtime
 # qpdf  — PDF password encryption (QpdfService)
 # tini  — proper PID 1 / signal handling
-# nikto — web vulnerability scanner (auto-scan tier 2)
 # nuclei (installed below) — template-based vuln scanner (auto-scan tier 2)
-# unzip + curl + ca-certificates — required to fetch nuclei release archive
+# nikto  (installed below) — web vulnerability scanner (auto-scan tier 2)
+#                              installed from GitHub release because
+#                              the apt 'nikto' package lives in the
+#                              Debian 'contrib' component, which is not
+#                              enabled on node:20-bookworm-slim.
+# perl + libnet-ssleay-perl  — nikto runtime (Perl + HTTPS support).
+#   Note: libwhisker2 is bundled inside the nikto release tarball
+#   (program/plugins/LW2.pm), so we do not need libwhisker2-perl from apt
+#   (which lives in 'contrib' anyway).
+# unzip + curl + ca-certificates — required to fetch release archives
 RUN apt-get update \
- && apt-get install -y --no-install-recommends qpdf tini nikto unzip curl ca-certificates \
+ && apt-get install -y --no-install-recommends \
+      qpdf tini perl libnet-ssleay-perl \
+      unzip curl ca-certificates \
  && rm -rf /var/lib/apt/lists/*
 
 # Install nuclei (pinned 3.2.9 — last-known-good stable; do NOT use 'latest').
@@ -63,6 +73,19 @@ RUN curl -sSL "https://github.com/projectdiscovery/nuclei/releases/download/v3.2
  && nuclei -version \
  && (nuclei -update-templates -ud /opt/nuclei-templates 2>/dev/null || echo 'template fetch failed (non-fatal — runtime will retry on first scan)') \
  && chown -R node:node /opt/nuclei-templates 2>/dev/null || true
+
+# Install nikto (pinned 2.5.0 — last stable release on GitHub).
+# Layout: /opt/nikto/program/nikto.pl  (the canonical entrypoint).
+# We expose `nikto` and `nikto.pl` on PATH via /usr/local/bin shims.
+RUN curl -sSL "https://github.com/sullo/nikto/archive/refs/tags/2.5.0.tar.gz" -o /tmp/nikto.tar.gz \
+ && mkdir -p /opt/nikto \
+ && tar -xzf /tmp/nikto.tar.gz -C /opt/nikto --strip-components=1 \
+ && rm /tmp/nikto.tar.gz \
+ && chmod +x /opt/nikto/program/nikto.pl \
+ && ln -sf /opt/nikto/program/nikto.pl /usr/local/bin/nikto \
+ && ln -sf /opt/nikto/program/nikto.pl /usr/local/bin/nikto.pl \
+ && (nikto -Version 2>&1 | head -5 || true) \
+ && test -x /opt/nikto/program/nikto.pl
 
 ENV NUCLEI_TEMPLATES_DIR=/opt/nuclei-templates \
     NODE_ENV=production \
