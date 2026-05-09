@@ -1,6 +1,7 @@
 import {
   BadRequestException,
   ConflictException,
+  forwardRef,
   Inject,
   Injectable,
   Logger,
@@ -34,6 +35,7 @@ import { TestingRequest } from './entities/testing-request.entity';
 import { Report } from '../reports/entities/report.entity';
 import { AuditService } from '../audit/audit.service';
 import { User } from '../users/entities/user.entity';
+import { AutoScanService } from '../auto-scan/auto-scan.service';
 
 type DetailsWithOptionalLogin = {
   login?: { username: string; password: string; notes?: string };
@@ -52,6 +54,8 @@ export class RequestsService {
     @Inject(MAIL_SERVICE) private readonly mail: MailService,
     private readonly audit: AuditService,
     private readonly cfg: AppConfigService,
+    @Inject(forwardRef(() => AutoScanService))
+    private readonly autoScan: AutoScanService,
   ) {}
 
   // ---------------- Client ----------------
@@ -103,7 +107,19 @@ export class RequestsService {
       })
       .catch(() => undefined);
 
-    // TODO(phase2): queue.enqueue('scan.*', ...) behind FEATURES_AUTOSCAN flag.
+    // Auto-scan: phase 1 — fire and forget background scan for website
+    // requests when the feature flag is on.
+    if (this.cfg.get('FEATURES_AUTOSCAN') && parsed.data.assetType === 'website') {
+      const url =
+        typeof (parsed.data.details as { url?: unknown })?.url === 'string'
+          ? ((parsed.data.details as { url: string }).url)
+          : null;
+      if (url) {
+        this.autoScan.runScan(row.id, url).catch((err) => {
+          this.logger.warn(`auto-scan trigger failed for ${row.id}: ${(err as Error).message}`);
+        });
+      }
+    }
 
     return { id: row.id, status: row.status };
   }

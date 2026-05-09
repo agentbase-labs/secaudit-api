@@ -22,6 +22,7 @@ import { AuthModule } from './modules/auth/auth.module';
 import { RequestsModule } from './modules/requests/requests.module';
 import { ReportsModule } from './modules/reports/reports.module';
 import { AdminRequestsModule } from './modules/admin-requests/admin-requests.module';
+import { AutoScanModule } from './modules/auto-scan/auto-scan.module';
 import { AdminUsersModule } from './modules/admin-users/admin-users.module';
 import { PublicModule } from './modules/public/public.module';
 import { HealthModule } from './modules/health/health.module';
@@ -51,6 +52,7 @@ import { CronModule } from './modules/cron/cron.module';
     RequestsModule,
     ReportsModule,
     AdminRequestsModule,
+    AutoScanModule,
     AdminUsersModule,
     PublicModule,
     HealthModule,

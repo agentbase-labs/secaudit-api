@@ -26,8 +26,21 @@ RUN pnpm --filter @cs-platform/shared build \
 
 # ---- runner ----
 FROM node:20-bookworm-slim AS runner
-RUN apt-get update && apt-get install -y --no-install-recommends qpdf tini \
+# Auto-recon Phase 1: install qpdf (PDF), tini (init), nikto (web scanner),
+# unzip (for nuclei archive), curl + ca-certificates (for downloads).
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      qpdf tini nikto unzip curl ca-certificates \
   && rm -rf /var/lib/apt/lists/*
+
+# Install nuclei (pinned 3.2.9 — last-good-known stable; do NOT use 'latest').
+RUN curl -sSL "https://github.com/projectdiscovery/nuclei/releases/download/v3.2.9/nuclei_3.2.9_linux_amd64.zip" -o /tmp/nuclei.zip \
+  && unzip -o /tmp/nuclei.zip -d /usr/local/bin/ \
+  && chmod +x /usr/local/bin/nuclei \
+  && rm /tmp/nuclei.zip \
+  && nuclei -version \
+  && (nuclei -update-templates -ud /opt/nuclei-templates 2>/dev/null || echo 'template fetch failed (non-fatal — runtime will retry on first scan)')
+
+ENV NUCLEI_TEMPLATES_DIR=/opt/nuclei-templates
 ENV NODE_ENV=production
 WORKDIR /app
 COPY --from=build /app/node_modules ./node_modules

@@ -1,5 +1,83 @@
 # PROGRESS — What's Working, What's Scaffolded, What's Deferred
 
+## 🛡️ Auto-Recon Phase 1 — 2026-05-09
+
+**Goal:** automated reconnaissance + light vulnerability scanning that runs in the background on every new website request. Free tools only. End-to-end: schema → service → API → UI → admin promote/dismiss flow.
+
+**What ships:**
+
+- **DB:** new `auto_scan_runs` + `auto_scan_findings` tables (migration `1730000000000-auto-scan.ts`). The parent `request_status_enum` is intentionally unchanged — auto-scan progress lives in `auto_scan_runs.status`, preserving existing patch-lock semantics on requests.
+- **Backend module** `apps/api/src/modules/auto-scan/`:
+  - 8 scanners (`scanners/*.scanner.ts`): http_fingerprint, dns_recon, tls_cert, crt_sh, mozilla_observatory, ssl_labs, nuclei, nikto. All Promise.allSettled-isolated with per-scanner timeouts (Tier 1: 60s, Tier 2: 5min). Failure of any one never crashes the orchestrator.
+  - `auto-scan.service.ts` orchestrator: runs Tier 1 in parallel, then Tier 2 (only if any Tier 1 succeeded). Persists findings, tallies counts/scores, updates run row.
+  - Domain blocklist (`*.gov`, `*.mil`, `*.gov.uk`, etc.) — hardcoded refusal.
+  - Audit-log entries for `auto_scan.start`, `auto_scan.complete`, `auto_scan.finding.promote`, `auto_scan.finding.dismiss`.
+  - `forwardRef` between `RequestsModule` ↔ `AutoScanModule` lets `RequestsService.create()` fire-and-forget the scan when `FEATURES_AUTOSCAN=true` and `assetType=website`.
+- **Admin endpoints** (under `/admin`):
+  - `GET /admin/requests/:id/auto-scan` — latest run + all findings + last 20 runs of history.
+  - `POST /admin/requests/:id/auto-scan` — manual rescan trigger.
+  - `PATCH /admin/auto-scan/findings/:id/promote` — mark for inclusion in final report.
+  - `PATCH /admin/auto-scan/findings/:id/dismiss` — mark with required reason.
+- **Client endpoint** (read-only, redacted): `GET /requests/:id/auto-scan-summary` — grades + severity bucket counts ONLY. NO titles, NO descriptions, NO evidence.
+- **Dockerfile**: pinned nuclei v3.2.9 + nikto + unzip + ca-certificates added to runner stage. Templates pre-fetched at build into `/opt/nuclei-templates`.
+- **Frontend admin** (`apps/web/src/components/auto-scan/admin-auto-scan-panel.tsx`): grade tiles, severity-filterable findings table, expandable rows with description/evidence/remediation/refs, per-row Promote / Dismiss actions, scan-history accordion. Auto-polls every 10s while scan is running.
+- **Frontend client** (`components/auto-scan/client-auto-scan-card.tsx`): trust-signal-only card with grades + bucket counts, polls every 15s while running.
+- **Dashboard polish**: admin home now has stats tiles + pending-review queue + recent activity; client dashboard adds stats tiles + better empty state.
+- **Shared types** (`packages/shared/src/types/auto-scan.ts`): `AutoScanRun`, `AutoScanFinding`, `AdminAutoScanResponse`, `ClientAutoScanSummary`, severity / source / category unions.
+- **Env flag**: `FEATURES_AUTOSCAN` already existed (default `false`) — flipped to `true` in production redeploy env block.
+
+**Quality gates:** `pnpm -r typecheck` ✅ · `pnpm --filter @cs-platform/api build` ✅ · `pnpm --filter @cs-platform/web build` ✅ · `pnpm -r lint` ✅ (0 errors / 0 warnings).
+
+**Deploy notes:** backend Docker image now ships nuclei + nikto binaries (~250MB layer added). First boot will take longer due to template download fallback if the build-time fetch failed. Migration applied via `--pre-deploy-cmd "node apps/api/dist/database/migrate.js"`.
+
+**Caveats / known limits:**
+- Mozilla Observatory and SSL Labs are external services with their own queues; if either is overloaded the scanner returns `outcome=failed` for that source and the rest still runs.
+- nuclei templates auto-update at Docker-build time. If GitHub rate-limits the template fetch, the build still succeeds (warning only) and the runtime scan will use whatever shipped in the binary.
+- crt.sh occasionally returns non-JSON during high load — we tolerate that with a soft-failure.
+- Per-scanner timeouts may need tuning under production load (Tier 1: 60s, Tier 2: 5min currently). Watch for `outcome=failed` patterns in audit logs.
+- Promote/dismiss actions only affect the latest scan run — historical finding rows survive but are tied to their original `scanId`.
+
+---
+
+## 🚚 Subdomain Move Prep — 2026-05-09
+
+**Goal:** prep the codebase for moving the cybersec app from apex `secaudit.xyz` to `app.secaudit.xyz`, freeing the apex for a separate marketing site. **Code + docs only — no deploy in this pass.**
+
+Findings during audit:
+- Backend already env-driven via `APP_URL` for every email/dashboard URL (`auth.service.ts`, `reports.service.ts`, `requests.service.ts`, `admin-requests.service.ts`). No hardcoded apex strings to rewrite.
+- Frontend (`apps/web/src`) had **zero** hardcoded `secaudit.xyz` references. All app-origin construction goes through `NEXT_PUBLIC_APP_URL`.
+- Mail templates (`apps/api/src/modules/mail/templates/index.ts`) consume already-rendered URLs from caller services — already correct.
+
+**Files touched (3):**
+- `apps/web/.env.local.example` — production block now points to `https://app.secaudit.xyz`; legacy apex value retained as a comment for reference.
+- `apps/api/.env.example` — `CORS_ORIGINS` / `CORS_ORIGIN` examples updated to `https://app.secaudit.xyz` (with the apex listed as additional origin so the marketing-site contact form can reach the API).
+- `apps/api/src/config/env.schema.ts` — comment on `COOKIE_DOMAIN` clarified for the post-move topology (`.secaudit.xyz` covers both `app.*` and `api.*`).
+
+**Env vars to update at deploy time** (no schema changes — all values move via env, no code redeploy needed once env is set):
+
+Backend (`apps/api`):
+- `APP_URL=https://app.secaudit.xyz`
+- `CORS_ORIGINS=https://app.secaudit.xyz,https://secaudit.xyz`
+  *(apex needed so the marketing-site contact form on `secaudit.xyz` can POST to `/public/contact`)*
+- `CORS_ORIGIN=https://app.secaudit.xyz` (kept for back-compat; redundant once `CORS_ORIGINS` lists both)
+- `COOKIE_DOMAIN=.secaudit.xyz` *(unchanged — already correct for cross-subdomain refresh cookie)*
+
+App frontend (`apps/web`):
+- `NEXT_PUBLIC_APP_URL=https://app.secaudit.xyz`
+- `NEXT_PUBLIC_API_BASE_URL=https://api.secaudit.xyz/api/v1` *(unchanged)*
+
+Marketing frontend (new — separate workflow):
+- `NEXT_PUBLIC_APP_URL=https://app.secaudit.xyz`
+- `NEXT_PUBLIC_API_BASE_URL=https://api.secaudit.xyz/api/v1`
+- `NEXT_PUBLIC_SITE_URL=https://secaudit.xyz`
+- `NEXT_PUBLIC_CONTACT_EMAIL=admin@secaudit.xyz`
+
+Full cutover procedure with exact AgentBase commands and rollback steps lives in [`../DEPLOY-PLAYBOOK.md`](../DEPLOY-PLAYBOOK.md).
+
+Quality gate: `pnpm -r typecheck` green after the change.
+
+---
+
 ## 🔧 Auth Hotfix — 2026-05-09
 
 **Two surgical fixes** to make production auth usable. Code only — no deploy yet.
@@ -40,6 +118,13 @@
 - The `cs_session` cookie has `SameSite=Lax`, no JWT, no role data — strict presence flag. Even if read by JS it carries no auth value.
 - Re-enabling verification later: set `EMAIL_VERIFICATION_REQUIRED=true`, redeploy backend. Existing unverified users would then be forced through `/verify-email` again — may want a migration to bump them to verified before flipping.
 - When the frontend moves to `app.secaudit.xyz`, no cookie changes are needed (marker cookie is set client-side on whatever origin loaded the login page).
+
+**Deployed: 2026-05-09 15:33 UTC.**
+- Frontend commit: `4be5a9fc08c6352a9aeef83ff8f3f482d22492bb` → deploy `dep-d7vl3mgu1m9s73cvhetg` → live.
+- Backend commit: `c5c10e8398c0ceb12a87f5b83976a3ce4e3c8654` → deploy `dep-d7vl3pou1m9s73cvhgsg` → live.
+- Backend redeployed with full 22-var env block (added `EMAIL_VERIFICATION_REQUIRED=false`, all secrets re-passed verbatim).
+- Smoke tests (all ✅): `/health` returns ok · admin login returns `role:admin` · public register returns `201` + `{accessToken, user, role:client, emailVerified:true}` (no "check your email"; auto-login works) · `secaudit.xyz/` HTTP 200 · `/login` renders `<title>Cybersec Platform</title>`.
+- Wallet spend on this redeploy: $0 (redeploys are free).
 
 ---
 
@@ -461,3 +546,97 @@ Highlights:
   `CREATE EXTENSION` (the default `postgres` superuser on docker-compose does).
 - The web `Dockerfile` builds the shared package as part of the multi-stage
   build; running `pnpm build` at root works identically.
+
+---
+
+## Auth Hotfix v2 (2026-05-09)
+
+Frontend-only follow-up to the role-aware login redirect hotfix. Three UX
+issues with the post-login experience:
+
+1. **Session not persisting on hard refresh** — the in-memory access token
+   was lost on reload, and there was no app-boot bootstrap. Protected
+   layouts started rendering before silent-refresh recovered, so the user
+   visibly bounced.
+2. **Brand link routed to `/`** — clicking the header logo from
+   `/dashboard` or `/admin` sent the user to the marketing root, where the
+   middleware (no marker on `/`) did nothing useful and the next click was
+   confusing.
+3. **Admins occasionally landing on `/dashboard`** instead of `/admin`,
+   mostly cleared up by stale-cache + role-aware redirect already shipped
+   in v1; the new bootstrap closes the remaining gap.
+
+### Changes
+
+- `apps/web/src/lib/session-context.tsx` (new) — `SessionProvider` that
+  runs on app boot, calls `/auth/refresh` then `/auth/me`, and exposes
+  `{ user, isLoading, isAuthenticated, setUser, refresh }` via `useSession()`.
+- `apps/web/src/app/layout.tsx` — wraps children in `SessionProvider`
+  (inside `QueryProvider`).
+- `apps/web/src/app/(app)/layout.tsx` — now a client layout with
+  `Loading…` state and `useEffect` redirect to `/login` when the bootstrap
+  completes unauthenticated.
+- `apps/web/src/app/(admin)/layout.tsx` — switched from `useMe` to
+  `useSession`, same loading + auth gate plus the existing role check.
+- `apps/web/src/components/layout/AppShell.tsx` — role-aware brand link
+  (`/admin` for admins, `/dashboard` for clients, `/` for guests), uses
+  `useSession`, and clears the session on logout.
+- `apps/web/src/app/(auth)/login/page.tsx` and `register/page.tsx` — push
+  the user into `SessionContext` immediately on success so role-aware
+  redirects fire against fresh state.
+
+No backend changes, no new dependencies. `useMe()` is left in place for
+any future callers but is no longer wired to layouts/AppShell.
+
+## 🔌 R2 Wire-Up — 2026-05-09 (UTC)
+- Added R2_ACCOUNT_ID / R2_ACCESS_KEY_ID / R2_SECRET_ACCESS_KEY / R2_BUCKET / R2_ENDPOINT to backend env
+- Storage adapter auto-selected R2StorageService (was NoOpStorageService)
+- Backend redeployed with full 27-var env block (deploy ID dep-d7vngj7aqgkc739et9l0, ~4.5 min wall time, $0 spend)
+- Bucket: secaudit-attachments (CORS configured by user for app.secaudit.xyz)
+- Smoke tests:
+  - GET /api/v1/health → `{"status":"ok"}`
+  - POST /api/v1/auth/login (admin) → 335-char accessToken
+  - POST /api/v1/admin/requests/<fakeUUID>/report-upload-url → HTTP 404 "Not found" (DB lookup reached, NOT 503 storage-unavailable → confirms R2 path live)
+  - Runtime logs: zero "R2 not fully configured" warnings (would log if NoOp/Local picked) → confirms R2StorageService instantiated
+
+## 🐛 Wizard Reset Bug Fix — 2026-05-09 (UTC)
+**Bug:** Switching `assetType` in `/dashboard/requests/new` kept stale `details`
+fields from the previous asset type (mobile fields surviving a switch to website
+etc), polluting the Review screen and submission payload.
+
+**Root cause:** The wizard reducer's `set` action shallow-merged `assetType`
+without resetting the per-type `details` bag. The `localStorage` autosave then
+preserved this bad shape across reloads.
+
+**Fixes (frontend, all in `apps/web/src/features/requests/wizard/`):**
+1. `types.ts` — added `getEmptyDetailsForAssetType` helper + `sanitizeDetailsForAssetType`
+   (mirrors the per-type Zod schemas in `@cs-platform/shared`).
+2. `useWizardState.ts` — reducer's `set` action now resets `details` to the empty
+   shape whenever `assetType` changes (forward, backward, or to/from `null`).
+3. `useRequestDraft.ts` — sanitizes `details` on draft restore so legacy drafts
+   carrying stale fields are scrubbed before being put back into state.
+4. `Step3Review.tsx` — Review screen renders `sanitizeDetailsForAssetType(...)`
+   instead of the raw `state.details` bag, so users only see fields relevant to
+   the chosen type even if state leaks.
+
+**Fix (shared, defense-in-depth):**
+5. `packages/shared/src/validation/request-details.ts` — added `.strict()` to all
+   four detail schemas (`Website`, `MobileApp`, `AttackSurface`, `ExternalInfra`)
+   so any future leak is rejected at parse time on both submit and PATCH paths
+   (frontend `CreateRequestSchema.safeParse` + backend
+   `requests.service.ts:create/patch`).
+
+**Quality gates:** `pnpm -r typecheck` ✅ · `pnpm --filter @cs-platform/web build` ✅ ·
+`pnpm --filter @cs-platform/api build` ✅. No new deps.
+
+**Deploys:**
+- Frontend (`@cs-platform/web`): commit `0a7fb5f0`, deploy `dep-d7vnmvdbbn2s73br3330`
+  → `live` ~4 min wall.
+- Backend (`@cs-platform/api`): commit `87cd715e`, deploy `dep-d7vnn2ssf8ds73863t30`
+  → `live` ~6 min wall (Docker rebuild for shared-package change, full 27-var env block).
+
+**Smoke:** `https://app.secaudit.xyz/` → 200, `/api/v1/health` → 200,
+`/dashboard/requests/new` → 307 (login redirect, expected). Final UX verification
+is the user retrying the wizard flow.
+
+**Wallet spend:** $0 (redeploys only, no new infra).
