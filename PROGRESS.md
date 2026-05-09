@@ -1,5 +1,18 @@
 # PROGRESS — What's Working, What's Scaffolded, What's Deferred
 
+## 🎯 Auto-Recon Tier 2 Disable — 2026-05-09 (UTC)
+
+- Added `AUTOSCAN_TIER_2_ENABLED` feature flag (default: `false`).
+- When disabled, the orchestrator skips Tier 2 (nuclei + nikto) entirely:
+  - `tier2_status` is recorded as `{ nuclei: 'skipped', nikto: 'skipped' }` for clear UI/audit visibility.
+  - Tier 2 results are not included in the final-status math, so a Tier 1-only success settles the run to `complete` (not `partial`).
+  - The Tier 2 scanner code is unchanged — only gated. Re-enable with a single env flip.
+- Reason: scans hung on Render starter (512MB RAM, likely OOM during nuclei template load). Tier 1 (6 free, fast, non-blocking scanners) remains the production scan path and produced 9+ findings on real targets in earlier smoke tests.
+- Re-enable: set `AUTOSCAN_TIER_2_ENABLED=true` in backend env + redeploy when the Render plan is upgraded or Tier 2 is hardened.
+- Files touched: `apps/api/src/config/env.schema.ts`, `apps/api/src/config/config.service.ts`, `apps/api/src/modules/auto-scan/auto-scan.service.ts`, `apps/api/.env.example`.
+
+---
+
 ## 🛡️ Auto-Recon Phase 1 — 2026-05-09
 
 **Goal:** automated reconnaissance + light vulnerability scanning that runs in the background on every new website request. Free tools only. End-to-end: schema → service → API → UI → admin promote/dismiss flow.

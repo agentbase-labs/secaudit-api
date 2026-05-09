@@ -42,6 +42,15 @@ export class AppConfigService {
   }
 
   /**
+   * When true, the auto-scan orchestrator runs Tier 2 scanners (nuclei +
+   * nikto). When false (default), Tier 2 is skipped entirely and the run
+   * completes on Tier 1 only. See env.schema for rationale.
+   */
+  get autoScanTier2Enabled(): boolean {
+    return this.get('AUTOSCAN_TIER_2_ENABLED');
+  }
+
+  /**
    * Whether TypeORM should negotiate TLS to Postgres. Defaults to true in
    * production (Render Postgres + most managed DBs require it) and false
    * locally, but the `DATABASE_SSL` env can override either way.

@@ -15,6 +15,7 @@ import {
   ScannerOutcome,
 } from '@cs-platform/shared';
 
+import { AppConfigService } from '../../config/config.service';
 import { AutoScanFindingEntity } from './entities/auto-scan-finding.entity';
 import { AutoScanRunEntity } from './entities/auto-scan-run.entity';
 import { HttpFingerprintScanner } from './scanners/http-fingerprint.scanner';
@@ -47,6 +48,7 @@ export class AutoScanService {
     @InjectRepository(TestingRequest)
     private readonly requestRepo: Repository<TestingRequest>,
     private readonly dataSource: DataSource,
+    private readonly cfg: AppConfigService,
     private readonly audit: AuditService,
     private readonly httpFingerprint: HttpFingerprintScanner,
     private readonly dnsRecon: DnsReconScanner,
@@ -235,15 +237,26 @@ export class AutoScanService {
     );
     const tier1AnyOk = tier1Outcomes.some((r) => r?.outcome === 'ok');
 
-    // ---- Tier 2 (parallel, only if any tier1 succeeded) ----
+    // ---- Tier 2 (parallel, only if any tier1 succeeded AND flag enabled) ----
+    // Tier 2 (nuclei + nikto) is gated behind AUTOSCAN_TIER_2_ENABLED.
+    // When disabled (default), it is skipped entirely — both scanners are
+    // marked `skipped` in tier2Status and the run can settle to `complete`
+    // on Tier 1 alone. See PROGRESS.md / env.schema for rationale.
+    const tier2Enabled = this.cfg.autoScanTier2Enabled;
     let tier2Outcomes: (ScannerResult | null)[] = [];
-    if (tier1AnyOk) {
+    let tier2Skipped = false;
+    if (tier1AnyOk && tier2Enabled) {
       const tier2Master = TIER2_TIMEOUT_MS + 10_000;
       const tier2Results = await Promise.allSettled([
         this.runScanner('nuclei', () => this.nuclei.scan(ctx2), tier2Master),
         this.runScanner('nikto', () => this.nikto.scan(ctx2), tier2Master),
       ]);
       tier2Outcomes = tier2Results.map((r) => (r.status === 'fulfilled' ? r.value : null));
+    } else if (tier1AnyOk && !tier2Enabled) {
+      tier2Skipped = true;
+      this.logger.log(
+        `auto-scan ${runId} Tier 2 skipped (AUTOSCAN_TIER_2_ENABLED=false)`,
+      );
     }
 
     const allResults = [...tier1Outcomes, ...tier2Outcomes].filter(
@@ -283,9 +296,14 @@ export class AutoScanService {
       ['http_fingerprint', 'dns_recon', 'tls_cert', 'crt_sh', 'mozilla_observatory', 'ssl_labs'],
       tier1Outcomes,
     );
-    const tier2Status = tier1AnyOk
-      ? buildStatusMap(['nuclei', 'nikto'], tier2Outcomes)
-      : null;
+    let tier2Status: Record<string, ScannerOutcome> | null;
+    if (tier2Skipped) {
+      tier2Status = { nuclei: 'skipped', nikto: 'skipped' };
+    } else if (tier1AnyOk) {
+      tier2Status = buildStatusMap(['nuclei', 'nikto'], tier2Outcomes);
+    } else {
+      tier2Status = null;
+    }
 
     // Scores
     const scores: AutoScanScores = {

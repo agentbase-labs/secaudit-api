@@ -29,7 +29,8 @@ export const EnvSchema = z.object({
   CORS_ORIGIN: z.string().optional().default(''),
 
   // Optional cookie domain for cross-subdomain refresh-cookie scoping in
-  // production (e.g. `.secaudit.xyz` so it works on both apex + api.*).
+  // production (e.g. `.secaudit.xyz` so it works on app.secaudit.xyz +
+  // api.secaudit.xyz, and the apex if it ever needs the cookie).
   COOKIE_DOMAIN: z.string().optional().default(''),
 
   // Force TypeORM to negotiate TLS to Postgres (Render Postgres requires
@@ -74,6 +75,15 @@ export const EnvSchema = z.object({
   QPDF_BINARY: z.string().default('qpdf'),
 
   FEATURES_AUTOSCAN: booleanString.default(false),
+
+  // When true, the auto-scan orchestrator runs Tier 2 scanners
+  // (nuclei + nikto) after Tier 1 succeeds. When false (default), Tier 2
+  // is skipped entirely and the run is marked `complete` on Tier 1
+  // success. Disabled by default because Tier 2 caused fresh scans to
+  // hang on Render starter (512MB RAM, likely OOM during nuclei template
+  // load). Re-enable once the orchestrator is hardened or the Render
+  // plan is upgraded.
+  AUTOSCAN_TIER_2_ENABLED: booleanString.default(false),
 
   // When true, /auth/register issues a verification email and /auth/login
   // refuses to sign in users whose email is not yet verified. When false
