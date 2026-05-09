@@ -25,7 +25,7 @@ import { MozillaObservatoryScanner } from './scanners/mozilla-observatory.scanne
 import { SslLabsScanner } from './scanners/ssl-labs.scanner';
 import { NucleiScanner } from './scanners/nuclei.scanner';
 import { NiktoScanner } from './scanners/nikto.scanner';
-import { ScannerContext, ScannerResult } from './scanners/scanner-base';
+import { ScannerContext, ScannerResult, withTimeout, failed as scannerFailed } from './scanners/scanner-base';
 import { AuditService } from '../audit/audit.service';
 import { TestingRequest } from '../requests/entities/testing-request.entity';
 
@@ -217,13 +217,18 @@ export class AutoScanService {
     };
 
     // ---- Tier 1 (parallel) ----
+    // Each scanner is wrapped in a master timeout (timeoutMs + 10s grace) as
+    // a safety net in case the scanner's internal timer fails to fire (e.g.
+    // child-process hang that survives SIGTERM). Without this, a single bad
+    // scanner can hang the whole run forever.
+    const tier1Master = TIER1_TIMEOUT_MS + 10_000;
     const tier1Results = await Promise.allSettled([
-      this.httpFingerprint.scan(ctx1),
-      this.dnsRecon.scan(ctx1),
-      this.tlsCert.scan(ctx1),
-      this.crtSh.scan(ctx1),
-      this.mozilla.scan(ctx1),
-      this.sslLabs.scan(ctx1),
+      this.runScanner('http_fingerprint', () => this.httpFingerprint.scan(ctx1), tier1Master),
+      this.runScanner('dns_recon', () => this.dnsRecon.scan(ctx1), tier1Master),
+      this.runScanner('tls_cert', () => this.tlsCert.scan(ctx1), tier1Master),
+      this.runScanner('crt_sh', () => this.crtSh.scan(ctx1), tier1Master),
+      this.runScanner('mozilla_observatory', () => this.mozilla.scan(ctx1), tier1Master),
+      this.runScanner('ssl_labs', () => this.sslLabs.scan(ctx1), tier1Master),
     ]);
     const tier1Outcomes = tier1Results.map((r) =>
       r.status === 'fulfilled' ? r.value : null,
@@ -233,9 +238,10 @@ export class AutoScanService {
     // ---- Tier 2 (parallel, only if any tier1 succeeded) ----
     let tier2Outcomes: (ScannerResult | null)[] = [];
     if (tier1AnyOk) {
+      const tier2Master = TIER2_TIMEOUT_MS + 10_000;
       const tier2Results = await Promise.allSettled([
-        this.nuclei.scan(ctx2),
-        this.nikto.scan(ctx2),
+        this.runScanner('nuclei', () => this.nuclei.scan(ctx2), tier2Master),
+        this.runScanner('nikto', () => this.nikto.scan(ctx2), tier2Master),
       ]);
       tier2Outcomes = tier2Results.map((r) => (r.status === 'fulfilled' ? r.value : null));
     }
@@ -326,6 +332,28 @@ export class AutoScanService {
   }
 
   // ---------- Helpers ----------
+
+  /**
+   * Run a single scanner with a master timeout. If the scanner's own
+   * internal timer fails to fire (e.g. a runaway child process), this
+   * outer race ensures the orchestrator can never hang forever on one
+   * misbehaving tool.
+   */
+  private async runScanner(
+    source: AutoScanSource,
+    fn: () => Promise<ScannerResult>,
+    masterTimeoutMs: number,
+  ): Promise<ScannerResult> {
+    const started = Date.now();
+    try {
+      return await withTimeout(fn(), masterTimeoutMs, source);
+    } catch (err) {
+      this.logger.warn(
+        `scanner ${source} master-timed-out: ${(err as Error).message}`,
+      );
+      return scannerFailed(source, err, started);
+    }
+  }
 
   private isBlockedDomain(url: string): boolean {
     try {

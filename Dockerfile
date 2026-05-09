@@ -47,19 +47,19 @@ FROM node:20-bookworm-slim AS runtime
 # qpdf  — PDF password encryption (QpdfService)
 # tini  — proper PID 1 / signal handling
 # nuclei (installed below) — template-based vuln scanner (auto-scan tier 2)
-# nikto  (installed below) — web vulnerability scanner (auto-scan tier 2)
-#                              installed from GitHub release because
-#                              the apt 'nikto' package lives in the
-#                              Debian 'contrib' component, which is not
-#                              enabled on node:20-bookworm-slim.
-# perl + libnet-ssleay-perl  — nikto runtime (Perl + HTTPS support).
-#   Note: libwhisker2 is bundled inside the nikto release tarball
-#   (program/plugins/LW2.pm), so we do not need libwhisker2-perl from apt
-#   (which lives in 'contrib' anyway).
-# unzip + curl + ca-certificates — required to fetch release archives
+# unzip + curl + ca-certificates — required to fetch nuclei release archive
+#
+# Nikto is intentionally NOT installed:
+#   - apt 'nikto' lives in Debian `contrib` (not enabled on slim base)
+#   - source install (Perl + bundled LW2.pm) hangs on real targets in
+#     practice; not worth the complexity. Per spec it's marked optional/
+#     redundant with Nuclei.
+# The NiktoScanner code remains in the codebase and gracefully soft-fails
+# with `nikto binary not found on PATH` (orchestrator survives via
+# Promise.allSettled).
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
-      qpdf tini perl libnet-ssleay-perl \
+      qpdf tini \
       unzip curl ca-certificates \
  && rm -rf /var/lib/apt/lists/*
 
@@ -73,19 +73,6 @@ RUN curl -sSL "https://github.com/projectdiscovery/nuclei/releases/download/v3.2
  && nuclei -version \
  && (nuclei -update-templates -ud /opt/nuclei-templates 2>/dev/null || echo 'template fetch failed (non-fatal — runtime will retry on first scan)') \
  && chown -R node:node /opt/nuclei-templates 2>/dev/null || true
-
-# Install nikto (pinned 2.5.0 — last stable release on GitHub).
-# Layout: /opt/nikto/program/nikto.pl  (the canonical entrypoint).
-# We expose `nikto` and `nikto.pl` on PATH via /usr/local/bin shims.
-RUN curl -sSL "https://github.com/sullo/nikto/archive/refs/tags/2.5.0.tar.gz" -o /tmp/nikto.tar.gz \
- && mkdir -p /opt/nikto \
- && tar -xzf /tmp/nikto.tar.gz -C /opt/nikto --strip-components=1 \
- && rm /tmp/nikto.tar.gz \
- && chmod +x /opt/nikto/program/nikto.pl \
- && ln -sf /opt/nikto/program/nikto.pl /usr/local/bin/nikto \
- && ln -sf /opt/nikto/program/nikto.pl /usr/local/bin/nikto.pl \
- && (nikto -Version 2>&1 | head -5 || true) \
- && test -x /opt/nikto/program/nikto.pl
 
 ENV NUCLEI_TEMPLATES_DIR=/opt/nuclei-templates \
     NODE_ENV=production \
