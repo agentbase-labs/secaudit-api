@@ -1,5 +1,71 @@
 # PROGRESS — What's Working, What's Scaffolded, What's Deferred
 
+## ✅ Deploy COMPLETE — 2026-05-09 (resume agent #3 — chunked commits)
+
+**Live URLs (all verified):**
+- Frontend: **https://secaudit.xyz** — HTTP 200, SSL active
+- Backend: **https://api.secaudit.xyz/api/v1/health** → 200 `{"status":"ok"}`
+- Admin login: `POST /api/v1/auth/login` with `admin@secaudit.xyz` / `uHbIQHRV1tNpnxwXiLGbAa1!` → **HTTP 200, role=admin, emailVerified=true** ✅
+
+**Render service IDs:**
+- Frontend: `srv-d7vj909j2pic73ehu8v0` → `https://secaudit-xyz.onrender.com`
+- Backend: `srv-d7vjdb1o3t8c73d0mmog` → `https://secaudit-api-rja6.onrender.com`
+- Database: `da799bf5-0fcc-4136-83d0-afd62c1dc49c` (`secaudit_db`, starter plan, $6/mo)
+
+**Wallet spend during this session:** $388.00 → $382.00 = **$6 spent** (one month of Postgres starter; the domain $3 was already charged on 05-09 morning). Workflow `budgetSpent` still reads `$3.00` since Render usage isn't tracked there.
+
+**How chunking solved the GitHub rate-limit problem:**
+Replaced the previous monolithic single-API-call commit with `/tmp/commit-chunked.cjs` — splits all 190 monorepo files into 8 batches of 25 files each, with 45-second delays between batches. Batch 1 uses `/website/commit-code` (or `/backend/commit-code`); batches 2..N use `/website/update-code` (or `/backend/update-code`).
+
+**Verified findings:**
+- `/website/update-code` AND `/backend/update-code` work fine in `repo_created` state — they don't require post-deploy state, contrary to the SKILL.md note. The skill could be improved to mention this.
+- 25-file batches with 45s gaps stayed comfortably under GitHub's secondary rate limit. Frontend pushed 190 files in 8 batches in ~5 minutes; backend likewise.
+- No Strategy 3 (direct git push) needed.
+
+**Phases & timing:**
+| Phase | Time | Status |
+|---|---|---|
+| Pre-flight (status, balance, migrate.ts verified) | 13:13–13:14 | ✅ |
+| Frontend chunked commit (8 batches, 190 files) | 13:14–13:20 | ✅ |
+| Frontend Render deploy (Next.js, pnpm build) | 13:20–13:23 (3 min) | ✅ live |
+| DNS setup + nameserver update | 13:23–13:24 | ✅ |
+| DB provisioning (parallel) | 13:24–13:28 | ✅ |
+| Backend chunked commit (8 batches, 190 files) | 13:24–13:28 | ✅ |
+| Backend Docker deploy with `--pre-deploy-cmd` migration | 13:28–13:34 (6 min) | ✅ live |
+| Attach domain + subdomain | 13:34 | ✅ |
+| First admin login attempt | 13:34 | ❌ 401 (seed.ts excluded from build) |
+| Add `AdminBootstrapService` (idempotent boot-time seed) + redeploy | 13:35–13:48 | ⚠️ first redeploy lost env vars (silent), second redeploy with full env worked | 
+| Final live verification (SSL active, admin login 200) | 13:53 | ✅ |
+
+**Migration runner: pre-deploy worked.** `node apps/api/dist/database/migrate.js` ran via Render's `--pre-deploy-cmd` and applied all pending migrations on the first backend deploy. The fallback (manual migration via shell) was not needed.
+
+**Admin user creation: replaced manual `pnpm seed` with idempotent `AdminBootstrapService`.**
+- New file `apps/api/src/database/admin-bootstrap.service.ts` — Nest provider implementing `OnApplicationBootstrap`. On every app startup it reads `ADMIN_EMAIL` + `ADMIN_INITIAL_PASSWORD` from env. If the user doesn't exist, it creates them with `role=admin`, `emailVerified=true`. If it already exists, it re-promotes (without overwriting the password). If the env vars are missing, it skips silently. If anything fails, it logs and continues — the app must boot regardless.
+- Gated by `ADMIN_BOOTSTRAP_ENABLED` env var (default `true`). Set to `false` to disable after first boot.
+- Wired into `DatabaseModule` via `TypeOrmModule.forFeature([User])` + provider registration.
+- This is now the canonical production admin-creation path. The existing `apps/api/src/seed.ts` script is still in the repo (and now also compiles to `dist/seed.js` since we removed it from `tsconfig.build.json`'s exclude list) but is no longer required for deploys.
+
+**Build-config fix:** removed `"src/seed.ts"` from `apps/api/tsconfig.build.json` `exclude` so `dist/seed.js` is now emitted by `nest build`. This means the original seed CLI is also available as `node apps/api/dist/seed.js` if the bootstrap service is ever disabled. `pnpm -r typecheck` ✅ green.
+
+**Open caveats / lessons learned:**
+1. **`redeploy-backend.cjs` clears env vars when called without `--env`.** First redeploy without `--env` flags lost JWT_ACCESS_SECRET and JWT_REFRESH_SECRET, causing `update_failed` with `Invalid environment configuration`. Workaround: always re-pass the full env block on every redeploy. This is a real footgun and should be flagged in the skill — the script's docstring says "DB vars are always synced automatically" but that does NOT extend to other env vars; the redeploy actively overwrites them with whatever you pass (or with nothing).
+2. **`verify-health.cjs` checks `/health` but our app exposes `/api/v1/health`.** Returns 404 on the public subdomain. Direct curl to `https://api.secaudit.xyz/api/v1/health` returns 200 OK. Cosmetic — not a real issue.
+3. **`admin@secaudit.xyz` mail not yet provisioned** — `MAIL_PROVIDER=console` so registration / password-reset / report-ready emails are logged to stdout, not actually sent. Switch to `MAIL_PROVIDER=resend` and add `RESEND_API_KEY` to enable real delivery. The `CONTACT_INBOX_EMAIL` is also `admin@secaudit.xyz` which has no actual mailbox at OpenProvider.
+4. **R2 storage not configured** — `StorageModule` falls back to `NoOpStorageService` in production, so PDF uploads/downloads will return `STORAGE_NOT_CONFIGURED` 503 errors. Add `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_BUCKET`, `R2_ENDPOINT` env vars and redeploy when ready.
+5. **`DATABASE_URL` for migrations was implicitly available** — Render's auto-injection works. Migration runner used it cleanly.
+6. **Frontend `NEXT_PUBLIC_*` env vars** — confirmed both `NEXT_PUBLIC_API_BASE_URL` (full URL incl. `/api/v1`) and `NEXT_PUBLIC_APP_URL` are baked into the Next.js bundle at build time. If you change either, you must redeploy the frontend (not just update env in Render's UI).
+7. **`recreate-backend-service.cjs` doesn't accept `--pre-deploy-cmd`** — if you ever need to change the pre-deploy command, you'll need to do it through the AgentBase API directly or extend the script.
+
+**Final state of `~/.joni/agentbase/websites.json`:**
+- `status: completed`
+- `ssl_status: active`
+- `website_url: https://secaudit.xyz`
+- `backend_subdomain: api.secaudit.xyz`
+- `db_status: creating` (stale label — DB has been live and serving for 30+ minutes)
+- All env vars persisted under `backend_env_vars`
+
+---
+
 ## 🟨 Deploy In Progress — 2026-05-09 (resume agent #2)
 
 AgentBase workflow `af0c16d3-96b0-4153-91dd-35e1e5bd1b72` initialized for `secaudit.xyz`. Domain registered ($3, expires 2027-05-09), frontend repo `agentbase-labs/secaudit-xyz` created. Wallet balance: $388.00 (no spend during this session beyond the original $3 domain).
