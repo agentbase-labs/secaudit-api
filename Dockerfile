@@ -44,10 +44,28 @@ RUN pnpm --filter @cs-platform/shared build \
 
 # ---------- runtime ----------
 FROM node:20-bookworm-slim AS runtime
+# qpdf  — PDF password encryption (QpdfService)
+# tini  — proper PID 1 / signal handling
+# nikto — web vulnerability scanner (auto-scan tier 2)
+# nuclei (installed below) — template-based vuln scanner (auto-scan tier 2)
+# unzip + curl + ca-certificates — required to fetch nuclei release archive
 RUN apt-get update \
- && apt-get install -y --no-install-recommends qpdf tini ca-certificates \
+ && apt-get install -y --no-install-recommends qpdf tini nikto unzip curl ca-certificates \
  && rm -rf /var/lib/apt/lists/*
-ENV NODE_ENV=production \
+
+# Install nuclei (pinned 3.2.9 — last-known-good stable; do NOT use 'latest').
+# Template fetch is best-effort: rate limits / GitHub flakes are non-fatal,
+# the orchestrator will retry on first scan.
+RUN curl -sSL "https://github.com/projectdiscovery/nuclei/releases/download/v3.2.9/nuclei_3.2.9_linux_amd64.zip" -o /tmp/nuclei.zip \
+ && unzip -o /tmp/nuclei.zip -d /usr/local/bin/ \
+ && chmod +x /usr/local/bin/nuclei \
+ && rm /tmp/nuclei.zip \
+ && nuclei -version \
+ && (nuclei -update-templates -ud /opt/nuclei-templates 2>/dev/null || echo 'template fetch failed (non-fatal — runtime will retry on first scan)') \
+ && chown -R node:node /opt/nuclei-templates 2>/dev/null || true
+
+ENV NUCLEI_TEMPLATES_DIR=/opt/nuclei-templates \
+    NODE_ENV=production \
     PORT=10000
 WORKDIR /app
 
