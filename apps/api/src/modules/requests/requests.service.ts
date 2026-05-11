@@ -9,7 +9,7 @@ import {
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { randomUUID } from 'crypto';
-import { Repository } from 'typeorm';
+import { DataSource, Repository } from 'typeorm';
 import {
   AdminRequestDetail,
   ApiErrorCodes,
@@ -36,6 +36,7 @@ import { Report } from '../reports/entities/report.entity';
 import { AuditService } from '../audit/audit.service';
 import { User } from '../users/entities/user.entity';
 import { AutoScanService } from '../auto-scan/auto-scan.service';
+import { PlanCapsService } from '../plans/plan-caps.service';
 
 type DetailsWithOptionalLogin = {
   login?: { username: string; password: string; notes?: string };
@@ -56,6 +57,8 @@ export class RequestsService {
     private readonly cfg: AppConfigService,
     @Inject(forwardRef(() => AutoScanService))
     private readonly autoScan: AutoScanService,
+    private readonly capsService: PlanCapsService,
+    private readonly dataSource: DataSource,
   ) {}
 
   // ---------------- Client ----------------
@@ -74,15 +77,31 @@ export class RequestsService {
       });
     }
     const details = await this.maybeEncryptLogin(parsed.data.details as DetailsWithOptionalLogin);
-    const row = await this.repo.save(
-      this.repo.create({
+
+    // Wrap counter-increment + INSERT in a single transaction so that a
+    // cap-exceeded throw rolls back the counter (closes the TOCTOU window
+    // per design doc §11 decision #2).
+    const enforced = this.cfg.get('PLAN_CAPS_ENFORCED') === 'true';
+    const row = await this.dataSource.transaction(async (manager) => {
+      // 1. Atomic UPSERT + cap check on the post-increment value.
+      //    Throws PlanCapExceededException → rollback → counter reverts.
+      await this.capsService.atomicIncrementAndCheck(
+        manager,
+        user.id,
+        parsed.data.testingType,
+        enforced,
+      );
+
+      // 2. Insert the testing_request inside the same tx.
+      const tr = manager.create(TestingRequest, {
         userId: user.id,
         assetType: parsed.data.assetType,
         testingType: parsed.data.testingType,
         status: RequestStatus.SUBMITTED,
         details,
-      }),
-    );
+      });
+      return manager.save(tr);
+    });
 
     await this.audit.record({
       actorUserId: user.id,

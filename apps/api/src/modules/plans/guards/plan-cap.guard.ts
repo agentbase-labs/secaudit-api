@@ -15,16 +15,30 @@ import { TestingRequest } from '../../requests/entities/testing-request.entity';
 import { UsageCounter } from '../entities/usage-counter.entity';
 import { PlanCapsService } from '../plan-caps.service';
 import { PlanCapExceededException } from '../plan-cap-exceeded.exception';
-import { startOfUtcMonth, startOfUtcYear } from '../plans.constants';
+import { startOfUtcYear } from '../plans.constants';
 
 /**
- * Enforces plan caps on `POST /requests`.
+ * Enforces plan caps on `POST /requests` — defense-in-depth pre-check.
  *
  * Wired AFTER `JwtAuthGuard` + `EmailVerifiedGuard` so `req.user` and
  * `req.body` (CreateRequestDto) are populated.
  *
+ * What this guard checks:
+ *   1. assetType allowed by plan
+ *   2. testingType allowed by plan
+ *   3. mobile-upload-disabled (mobileUploadMaxMb === 0)
+ *   4. registered-assets cap (per §11 decision #1: COUNT(DISTINCT target_url))
+ *   5. manual-pentest YTD pre-check + manual_pentest disabled
+ *   6. red-team disabled
+ *
+ * What this guard NO LONGER checks (moved to `RequestsService.create` via
+ * `PlanCapsService.atomicIncrementAndCheck`, the authoritative source):
+ *   - submissions-per-month  (TOCTOU-prone; now atomic UPSERT in tx)
+ *   - per-type sub-caps      (same — needs the atomic counter)
+ *
  * Kill-switch: short-circuits to `true` when `PLAN_CAPS_ENFORCED !== 'true'`
- * (default). This is the rollout-safety net per doc 03 \u00a78 step 3.
+ * (default). The same env flag is mirrored in `atomicIncrementAndCheck` so
+ * the kill-switch is honored end-to-end. Doc 03 §8 step 3.
  */
 @Injectable()
 export class PlanCapGuard implements CanActivate {
@@ -88,7 +102,7 @@ export class PlanCapGuard implements CanActivate {
       });
     }
 
-    // 4. Registered assets cap (derived per \u00a711 decision #1).
+    // 4. Registered assets cap (derived per §11 decision #1).
     //    Stable asset-key = first non-null of details.url / details.domain /
     //    details.packageName. Older rows missing all three are excluded.
     if (caps.registeredAssetsMax !== -1) {
@@ -133,42 +147,12 @@ export class PlanCapGuard implements CanActivate {
       }
     }
 
-    // 5. Submissions per month
-    const periodStart = startOfUtcMonth(new Date());
-    const counter = await this.counters.findOne({ where: { userId: user.id, periodStart } });
-    const submissionsCount = counter?.submissionsCount ?? 0;
-    if (
-      caps.submissionsPerMonth !== -1 &&
-      submissionsCount >= caps.submissionsPerMonth
-    ) {
-      throw new PlanCapExceededException({
-        cap: 'SUBMISSIONS_PER_MONTH',
-        current: submissionsCount,
-        max: caps.submissionsPerMonth,
-        currentPlanId: planId,
-      });
-    }
+    // 5. submissions-per-month + per-type sub-cap are NOT checked here.
+    //    They moved to `RequestsService.create` →
+    //    `PlanCapsService.atomicIncrementAndCheck` to close the TOCTOU
+    //    window (see design doc §11 decision #2).
 
-    // 6. Per-type sub-cap (counted within the current UTC month)
-    const subCap = caps.perTypeSubmissionsPerMonth?.[dto.testingType];
-    if (subCap !== undefined && subCap !== null) {
-      const usedThisType = await this.requests
-        .createQueryBuilder('r')
-        .where('r."userId" = :uid', { uid: user.id })
-        .andWhere('r."testingType" = :tt', { tt: dto.testingType })
-        .andWhere('r."createdAt" >= :ps', { ps: periodStart })
-        .getCount();
-      if (usedThisType >= subCap) {
-        throw new PlanCapExceededException({
-          cap: `PER_TYPE_${dto.testingType.toUpperCase()}`,
-          current: usedThisType,
-          max: subCap,
-          currentPlanId: planId,
-        });
-      }
-    }
-
-    // 7. Manual pentest YTD
+    // 6. Manual pentest YTD
     if (dto.testingType === TestingType.MANUAL_PENTEST) {
       if (caps.manualPentestsPerYear === 0) {
         throw new PlanCapExceededException({
@@ -197,7 +181,7 @@ export class PlanCapGuard implements CanActivate {
       }
     }
 
-    // 8. Red team
+    // 7. Red team
     if (dto.testingType === TestingType.RED_TEAM && !caps.redTeamEnabled) {
       throw new PlanCapExceededException({
         cap: 'RED_TEAM_DISABLED',
