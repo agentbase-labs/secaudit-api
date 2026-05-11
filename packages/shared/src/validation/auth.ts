@@ -11,13 +11,29 @@ const passwordSchema = z
 
 export const emailSchema = z.string().trim().toLowerCase().email('Invalid email address');
 
+/**
+ * Plan slug used by the public registration flow + (eventually)
+ * `/public/plans` from the API. Kept in sync with
+ * `design/plans/02-secaudit-plans.md`.
+ */
+export const PlanSlugSchema = z.enum(['free', 'starter', 'pro', 'business', 'enterprise']);
+export type PlanSlug = z.infer<typeof PlanSlugSchema>;
+
+export const BillingCycleSchema = z.enum(['monthly', 'annual']);
+export type BillingCycle = z.infer<typeof BillingCycleSchema>;
+
 export const RegisterSchema = z.object({
   fullName: z.string().trim().min(2).max(200),
   email: emailSchema,
   password: passwordSchema,
   companyName: z.string().trim().max(200).optional().or(z.literal('')),
+  // Optional today (server defaults to `free` if absent). Once the
+  // plans backend ships these become required client-side.
+  planId: PlanSlugSchema.optional(),
+  billingCycle: BillingCycleSchema.optional(),
 });
 export type RegisterInput = z.infer<typeof RegisterSchema>;
+export type RegisterDto = RegisterInput;
 
 export const LoginSchema = z.object({
   email: emailSchema,
