@@ -64,6 +64,10 @@ export const EnvSchema = z.object({
   RESEND_API_KEY: z.string().optional().default(''),
   FROM_EMAIL: z.string().email().default('no-reply@example.com'),
   CONTACT_INBOX_EMAIL: z.string().email().default('contact@example.com'),
+  // Optional aliases used by ResendMailService. If unset, FROM_EMAIL
+  // and CONTACT_INBOX_EMAIL (or ADMIN_EMAIL) are used as fallbacks.
+  RESEND_FROM_EMAIL: z.string().optional().default(''),
+  RESEND_ADMIN_EMAIL: z.string().optional().default(''),
 
   REDIS_URL: z.string().optional().default(''),
 

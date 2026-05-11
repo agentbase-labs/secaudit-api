@@ -1,6 +1,7 @@
 import {
   BadRequestException,
   ConflictException,
+  Inject,
   Injectable,
   Logger,
   NotFoundException,
@@ -13,7 +14,11 @@ import {
 } from '@cs-platform/shared';
 import type { BillingCycle, PlanSlug } from '@cs-platform/shared';
 
+import { AppConfigService } from '../../config/config.service';
 import { AuditService } from '../audit/audit.service';
+import { MAIL_SERVICE } from '../mail/mail.service';
+import type { MailService } from '../mail/mail.service';
+import { UsersService } from '../users/users.service';
 import { PlanChangeRequest } from './entities/plan-change-request.entity';
 import { PlansService } from './plans.service';
 import { SubscriptionsService } from './subscriptions.service';
@@ -29,7 +34,60 @@ export class PlanChangeRequestsService {
     private readonly subs: SubscriptionsService,
     private readonly audit: AuditService,
     private readonly dataSource: DataSource,
+    private readonly users: UsersService,
+    private readonly cfg: AppConfigService,
+    @Inject(MAIL_SERVICE) private readonly mail: MailService,
   ) {}
+
+  // ---------------- Email helpers ----------------
+
+  private prettyPlanName(slug: string): string {
+    switch (slug) {
+      case 'free':
+        return 'Free';
+      case 'starter':
+        return 'Starter';
+      case 'pro':
+        return 'Pro';
+      case 'business':
+        return 'Business';
+      case 'enterprise':
+        return 'Enterprise';
+      default:
+        return slug.charAt(0).toUpperCase() + slug.slice(1);
+    }
+  }
+
+  private appUrl(): string {
+    return this.cfg.get('APP_URL');
+  }
+
+  private adminInboxAddress(): string {
+    // RESEND_ADMIN_EMAIL > CONTACT_INBOX_EMAIL > ADMIN_EMAIL > admin@secaudit.xyz
+    // Read both via cfg + raw env to handle either being set in prod.
+    const cfgGet = (k: string): string => {
+      try {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        return ((this.cfg as any).get(k) ?? '').toString().trim();
+      } catch {
+        return '';
+      }
+    };
+    return (
+      cfgGet('RESEND_ADMIN_EMAIL') ||
+      (process.env.RESEND_ADMIN_EMAIL ?? '').trim() ||
+      cfgGet('CONTACT_INBOX_EMAIL') ||
+      cfgGet('ADMIN_EMAIL') ||
+      (process.env.ADMIN_EMAIL ?? '').trim() ||
+      'admin@secaudit.xyz'
+    );
+  }
+
+  private fireEmail(p: Promise<unknown>, label: string): void {
+    void p.catch((e) =>
+      this.logger.warn(`mail:${label} send failed: ${(e as Error).message}`),
+    );
+  }
 
   /** User-driven plan change request (creates pending PCR). */
   async requestChange(args: {
@@ -66,6 +124,49 @@ export class PlanChangeRequestsService {
       targetId: pcr.id,
       meta: { fromPlanId: pcr.fromPlanId, toPlanId: pcr.toPlanId, billingCycle: pcr.billingCycle },
     });
+
+    // Fire-and-forget: confirm to user + notify admin inbox.
+    const fromPlanName = this.prettyPlanName(pcr.fromPlanId);
+    const toPlanName = this.prettyPlanName(pcr.toPlanId);
+    const dashboardUrl = `${this.appUrl()}/dashboard/billing`;
+    const adminInboxUrl = `${this.appUrl()}/admin/plan-change-requests`;
+
+    const user = await this.users.findById(args.userId).catch(() => null);
+    if (user) {
+      this.fireEmail(
+        this.mail.sendTemplate({
+          to: user.email,
+          template: 'pcr-submitted-user',
+          data: {
+            fullName: user.fullName,
+            fromPlanName,
+            toPlanName,
+            billingCycle: pcr.billingCycle,
+            dashboardUrl,
+          },
+        }),
+        'pcr-submitted-user',
+      );
+      this.fireEmail(
+        this.mail.sendTemplate({
+          to: this.adminInboxAddress(),
+          template: 'pcr-submitted-admin',
+          data: {
+            userEmail: user.email,
+            userFullName: user.fullName,
+            companyName: user.companyName ?? undefined,
+            fromPlanName,
+            toPlanName,
+            billingCycle: pcr.billingCycle,
+            pcrId: pcr.id,
+            adminInboxUrl,
+          },
+          replyTo: user.email,
+        }),
+        'pcr-submitted-admin',
+      );
+    }
+
     return pcr;
   }
 
@@ -162,6 +263,25 @@ export class PlanChangeRequestsService {
       },
     });
 
+    // Fire-and-forget: tell the user their upgrade is now active.
+    const userForApprove = await this.users.findById(pcr.userId).catch(() => null);
+    if (userForApprove) {
+      this.fireEmail(
+        this.mail.sendTemplate({
+          to: userForApprove.email,
+          template: 'pcr-approved',
+          data: {
+            fullName: userForApprove.fullName,
+            toPlanName: this.prettyPlanName(pcr.toPlanId),
+            billingCycle: pcr.billingCycle,
+            notes: args.notes,
+            dashboardUrl: `${this.appUrl()}/dashboard/billing`,
+          },
+        }),
+        'pcr-approved',
+      );
+    }
+
     return { pcr, subscription: updatedSub };
   }
 
@@ -204,6 +324,25 @@ export class PlanChangeRequestsService {
       ip: args.ip ?? null,
       meta: { userId: pcr.userId, toPlanId: pcr.toPlanId, notes: pcr.notes },
     });
+
+    // Fire-and-forget: explain the rejection.
+    const userForReject = await this.users.findById(pcr.userId).catch(() => null);
+    if (userForReject) {
+      this.fireEmail(
+        this.mail.sendTemplate({
+          to: userForReject.email,
+          template: 'pcr-rejected',
+          data: {
+            fullName: userForReject.fullName,
+            toPlanName: this.prettyPlanName(pcr.toPlanId),
+            notes: args.notes,
+            dashboardUrl: `${this.appUrl()}/dashboard/billing`,
+          },
+        }),
+        'pcr-rejected',
+      );
+    }
+
     return pcr;
   }
 }

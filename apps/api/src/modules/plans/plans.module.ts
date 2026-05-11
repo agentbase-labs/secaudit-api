@@ -21,6 +21,7 @@ import { SeatsGuard } from './guards/seats.guard';
 
 import { TestingRequest } from '../requests/entities/testing-request.entity';
 import { Report } from '../reports/entities/report.entity';
+import { UsersModule } from '../users/users.module';
 
 /**
  * Owns Plan / Subscription / UsageCounter / PlanChangeRequest entities,
@@ -40,6 +41,7 @@ import { Report } from '../reports/entities/report.entity';
       TestingRequest,
       Report,
     ]),
+    UsersModule,
   ],
   controllers: [
     PlansController,

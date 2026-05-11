@@ -173,6 +173,25 @@ export class AuthService {
         .catch(() => undefined);
     }
 
+    // Welcome email — fire-and-forget. Always sent (paid or free signup).
+    // For paid signups we tell the user their upgrade is pending review.
+    void this.mail
+      .sendTemplate({
+        to: user.email,
+        template: 'welcome-signup',
+        data: {
+          fullName: user.fullName,
+          planName: prettyPlanName('free'),
+          pendingUpgrade: wantsPaidUpgrade,
+          pendingPlanName:
+            wantsPaidUpgrade && input.planId ? prettyPlanName(input.planId) : undefined,
+          dashboardUrl: `${this.cfg.get('APP_URL')}/dashboard`,
+        },
+      })
+      .catch((e) =>
+        this.logger.warn(`welcome-signup send failed: ${(e as Error).message}`),
+      );
+
     const pendingPlan: PlanSlug | null =
       wantsPaidUpgrade && input.planId ? input.planId : null;
 
@@ -513,6 +532,28 @@ export class AuthService {
       actorUserId: row.userId,
       action: 'user.reset_password',
     });
+  }
+}
+
+/**
+ * Maps internal plan slug to a human-friendly name shown in user-facing
+ * email copy. Kept local because the Plan rows are seeded but we don't
+ * want to hit the DB on the auth path just for a label.
+ */
+function prettyPlanName(slug: string): string {
+  switch (slug) {
+    case 'free':
+      return 'Free';
+    case 'starter':
+      return 'Starter';
+    case 'pro':
+      return 'Pro';
+    case 'business':
+      return 'Business';
+    case 'enterprise':
+      return 'Enterprise';
+    default:
+      return slug.charAt(0).toUpperCase() + slug.slice(1);
   }
 }
 

@@ -200,4 +200,47 @@ describe('AuthService.register — plan selection paths', () => {
     });
     expect(saved.pcrs[0]!.billingCycle).toBe('monthly');
   });
+
+  it('free signup fires welcome-signup email with planName=Free, pendingUpgrade=false', async () => {
+    const { authService, mail } = buildHarness();
+    await authService.register({
+      fullName: 'Welcome User',
+      email: 'welcome@example.com',
+      password: 'CorrectHorseBattery1!',
+    });
+    // Flush fire-and-forget microtasks.
+    await new Promise((r) => setImmediate(r));
+    const welcome = mail.sendTemplate.mock.calls
+      .map((c: unknown[]) => c[0] as Record<string, unknown>)
+      .find((c) => c.template === 'welcome-signup');
+    expect(welcome).toBeDefined();
+    expect(welcome!.to).toBe('welcome@example.com');
+    expect(welcome!.data).toMatchObject({
+      fullName: 'Welcome User',
+      planName: 'Free',
+      pendingUpgrade: false,
+    });
+  });
+
+  it('paid signup fires welcome-signup with pendingUpgrade=true and pendingPlanName=Pro', async () => {
+    const { authService, mail } = buildHarness();
+    await authService.register({
+      fullName: 'Pending Pro',
+      email: 'pending@example.com',
+      password: 'CorrectHorseBattery1!',
+      planId: 'pro',
+      billingCycle: 'monthly',
+    });
+    await new Promise((r) => setImmediate(r));
+    const welcome = mail.sendTemplate.mock.calls
+      .map((c: unknown[]) => c[0] as Record<string, unknown>)
+      .find((c) => c.template === 'welcome-signup');
+    expect(welcome).toBeDefined();
+    expect(welcome!.data).toMatchObject({
+      fullName: 'Pending Pro',
+      planName: 'Free',
+      pendingUpgrade: true,
+      pendingPlanName: 'Pro',
+    });
+  });
 });

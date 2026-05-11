@@ -7,7 +7,12 @@ export type EmailTemplate =
   | 'status-change'
   | 'report-ready'
   | 'pdf-password'
-  | 'contact-received';
+  | 'contact-received'
+  | 'welcome-signup'
+  | 'pcr-submitted-user'
+  | 'pcr-submitted-admin'
+  | 'pcr-approved'
+  | 'pcr-rejected';
 
 export interface EmailTemplateData {
   'verify-email': { fullName: string; verifyUrl: string; expiresHours: number };
@@ -52,6 +57,62 @@ export interface EmailTemplateData {
     email: string;
     companyName?: string;
     message: string;
+  };
+  /**
+   * Welcome email — sent on successful registration.
+   * planName is the human-readable name ("Free", "Starter", "Pro", …).
+   * If the user signed up requesting a paid plan, set pendingUpgrade=true
+   * so we can mention "we'll review your upgrade request shortly."
+   */
+  'welcome-signup': {
+    fullName: string;
+    planName: string;
+    pendingUpgrade?: boolean;
+    pendingPlanName?: string;
+    dashboardUrl: string;
+  };
+  /**
+   * Plan-change request submitted — confirmation to the user.
+   */
+  'pcr-submitted-user': {
+    fullName: string;
+    fromPlanName: string;
+    toPlanName: string;
+    billingCycle: string;
+    dashboardUrl: string;
+  };
+  /**
+   * Plan-change request submitted — notification to the admin inbox.
+   * Includes everything ops needs to action it.
+   */
+  'pcr-submitted-admin': {
+    userEmail: string;
+    userFullName: string;
+    companyName?: string;
+    fromPlanName: string;
+    toPlanName: string;
+    billingCycle: string;
+    pcrId: string;
+    adminInboxUrl: string;
+  };
+  /**
+   * Admin approved the PCR — user's plan is now active on the new tier.
+   */
+  'pcr-approved': {
+    fullName: string;
+    toPlanName: string;
+    billingCycle: string;
+    notes?: string;
+    dashboardUrl: string;
+  };
+  /**
+   * Admin rejected the PCR — explain why.
+   */
+  'pcr-rejected': {
+    fullName: string;
+    toPlanName: string;
+    notes: string;
+    dashboardUrl: string;
   };
 }
 
