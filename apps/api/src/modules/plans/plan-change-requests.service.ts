@@ -94,6 +94,7 @@ export class PlanChangeRequestsService {
     userId: string;
     toPlanId: string;
     billingCycle: BillingCycle;
+    userNotes?: string | null;
   }): Promise<PlanChangeRequest> {
     const sub = await this.subs.requireActive(args.userId);
 
@@ -116,6 +117,12 @@ export class PlanChangeRequestsService {
       toPlanId: args.toPlanId,
       billingCycle: args.billingCycle,
     });
+
+    // Persist user-supplied context note (separate from admin decision notes).
+    if (args.userNotes) {
+      pcr.userNotes = args.userNotes.trim().slice(0, 500);
+      await this.repo.save(pcr);
+    }
 
     await this.audit.record({
       actorUserId: args.userId,
@@ -170,6 +177,74 @@ export class PlanChangeRequestsService {
     return pcr;
   }
 
+  // ---------------- User self-service ----------------
+
+  /**
+   * Cancel the authenticated user's own **pending** PCR.
+   * Returns 404 if no pending PCR exists.
+   */
+  async cancelChange(args: { userId: string }): Promise<{ success: true; cancelledAt: Date }> {
+    const pcr = await this.repo.findOne({
+      where: { userId: args.userId, status: PlanChangeRequestStatus.PENDING },
+    });
+    if (!pcr) {
+      throw new NotFoundException({
+        code: 'NO_PENDING_REQUEST',
+        message: 'No pending plan change request found',
+      });
+    }
+    pcr.status = PlanChangeRequestStatus.CANCELLED;
+    pcr.cancelledAt = new Date();
+    await this.repo.save(pcr);
+
+    await this.audit.record({
+      actorUserId: args.userId,
+      action: 'subscription.change_cancelled',
+      targetType: 'PlanChangeRequest',
+      targetId: pcr.id,
+      meta: { toPlanId: pcr.toPlanId },
+    });
+
+    return { success: true, cancelledAt: pcr.cancelledAt };
+  }
+
+  /**
+   * List the authenticated user's own PCR history (paginated, newest first).
+   */
+  async listForUser(args: {
+    userId: string;
+    status?: PlanChangeRequestStatus;
+    page?: number;
+    pageSize?: number;
+  }) {
+    const page = Math.max(1, args.page ?? 1);
+    const pageSize = Math.min(50, Math.max(1, args.pageSize ?? 10));
+    const qb = this.repo
+      .createQueryBuilder('p')
+      .where('p.userId = :uid', { uid: args.userId })
+      .orderBy('p.createdAt', 'DESC')
+      .skip((page - 1) * pageSize)
+      .take(pageSize);
+    if (args.status) qb.andWhere('p.status = :s', { s: args.status });
+    const [rows, total] = await qb.getManyAndCount();
+    return {
+      items: rows.map((r) => ({
+        id: r.id,
+        toPlanId: r.toPlanId as PlanSlug,
+        toBillingCycle: r.billingCycle,
+        status: r.status,
+        userNotes: r.userNotes,
+        adminNotes: r.notes,
+        createdAt: r.createdAt.toISOString(),
+        processedAt: r.processedAt?.toISOString() ?? null,
+        processedBy: r.processedBy,
+      })),
+      total,
+      page,
+      pageSize,
+    };
+  }
+
   // ---------------- Admin ----------------
 
   async list(filters: {
@@ -206,6 +281,8 @@ export class PlanChangeRequestsService {
         processedAt: r.processedAt?.toISOString() ?? null,
         processedBy: r.processedBy,
         notes: r.notes,
+        adminNotes: r.notes,
+        userNotes: r.userNotes,
       })),
       page,
       pageSize,

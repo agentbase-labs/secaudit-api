@@ -61,8 +61,17 @@ export class PlanChangeRequest {
   })
   status!: PlanChangeRequestStatus;
 
+  /** Admin decision notes (set on approve / reject). */
   @Column({ type: 'text', nullable: true })
   notes!: string | null;
+
+  /** Optional context the user supplied when submitting the change request. */
+  @Column({ type: 'text', nullable: true })
+  userNotes!: string | null;
+
+  /** Timestamp when the user cancelled their own pending PCR. */
+  @Column({ type: 'timestamptz', nullable: true })
+  cancelledAt!: Date | null;
 
   @Column({ type: 'timestamptz', nullable: true })
   processedAt!: Date | null;

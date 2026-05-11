@@ -31,6 +31,7 @@ export enum PlanChangeRequestStatus {
   PENDING = 'pending',
   APPROVED = 'approved',
   REJECTED = 'rejected',
+  CANCELLED = 'cancelled',
 }
 
 export interface PlanCaps {
@@ -126,3 +127,75 @@ export interface PlanCapExceededBody {
   suggestUpgradeTo: PlanSlug | null;
   message: string;
 }
+
+/**
+ * Admin-facing row for `GET /admin/plan-change-requests`.
+ * Mirrors the backend response: each row joins the user (id/email/fullName/companyName)
+ * and includes the user's currently-active subscription so admins can sanity-check
+ * what plan they are upgrading from.
+ */
+export interface AdminPlanChangeRequestUser {
+  id: string;
+  email: string;
+  fullName: string;
+  companyName: string | null;
+  /** Snapshot of the user's currently-active subscription at list time. */
+  currentSubscription?: {
+    planId: PlanSlug;
+    billingCycle: BillingCycle | null;
+    status: SubscriptionStatus;
+  } | null;
+}
+
+export interface AdminPlanChangeRequest {
+  id: string;
+  user: AdminPlanChangeRequestUser;
+  fromPlanId: PlanSlug;
+  toPlanId: PlanSlug;
+  billingCycle: BillingCycle;
+  status: PlanChangeRequestStatus;
+  /** @deprecated use adminNotes */
+  notes: string | null;
+  /** Admin decision note (written on approve/reject). */
+  adminNotes: string | null;
+  /** User-supplied context note (submitted with the change request). */
+  userNotes: string | null;
+  createdAt: string;
+  processedAt: string | null;
+  processedBy: string | null;
+}
+
+export interface ApprovePlanChangeRequestResponse {
+  /** Updated subscription after the plan change has been applied. */
+  subscription: PublicSubscription;
+}
+
+/** Response from `POST /me/subscription/cancel-change`. */
+export interface CancelChangeResponse {
+  success: true;
+  cancelledAt: string;
+}
+
+/** Single row in the user-facing PCR history list. */
+export interface UserPlanChangeRequestItem {
+  id: string;
+  toPlanId: PlanSlug;
+  toBillingCycle: BillingCycle;
+  status: PlanChangeRequestStatus;
+  /** User-supplied context note (if any). */
+  userNotes: string | null;
+  /** Admin decision note (visible to user after approve/reject). */
+  adminNotes: string | null;
+  createdAt: string;
+  processedAt: string | null;
+  processedBy: string | null;
+}
+
+/** Response from `GET /me/subscription/changes`. */
+export interface ListUserPcrResponse {
+  items: UserPlanChangeRequestItem[];
+  total: number;
+  page: number;
+  pageSize: number;
+}
+
