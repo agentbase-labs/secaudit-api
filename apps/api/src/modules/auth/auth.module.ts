@@ -5,6 +5,7 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 
 import { AppConfigService } from '../../config/config.service';
 import { UsersModule } from '../users/users.module';
+import { PlansModule } from '../plans/plans.module';
 import { AuthController } from './auth.controller';
 import { AuthService } from './auth.service';
 import { EmailVerificationToken } from './entities/email-verification-token.entity';
@@ -24,6 +25,7 @@ import { JwtStrategy } from './strategies/jwt.strategy';
       }),
     }),
     TypeOrmModule.forFeature([EmailVerificationToken, PasswordResetToken, RefreshToken]),
+    PlansModule,
   ],
   controllers: [AuthController],
   providers: [AuthService, JwtStrategy],

@@ -11,9 +11,9 @@ import {
 import { JwtService } from '@nestjs/jwt';
 import { InjectRepository } from '@nestjs/typeorm';
 import { randomUUID } from 'crypto';
-import { Repository } from 'typeorm';
+import { DataSource, Repository } from 'typeorm';
 import { ApiErrorCodes } from '@cs-platform/shared';
-import type { PublicUser } from '@cs-platform/shared';
+import type { BillingCycle, PlanSlug, PublicUser } from '@cs-platform/shared';
 
 import { AppConfigService } from '../../config/config.service';
 import { hashPassword, needsRehash, verifyPassword } from '../../common/utils/password';
@@ -22,6 +22,8 @@ import { MAIL_SERVICE } from '../mail/mail.service';
 import type { MailService } from '../mail/mail.service';
 import { AuditService } from '../audit/audit.service';
 import { UsersService } from '../users/users.service';
+import { SubscriptionsService } from '../plans/subscriptions.service';
+import { User } from '../users/entities/user.entity';
 import { EmailVerificationToken } from './entities/email-verification-token.entity';
 import { PasswordResetToken } from './entities/password-reset-token.entity';
 import { RefreshToken } from './entities/refresh-token.entity';
@@ -50,6 +52,8 @@ export class AuthService {
     private readonly jwt: JwtService,
     private readonly cfg: AppConfigService,
     private readonly audit: AuditService,
+    private readonly subscriptions: SubscriptionsService,
+    private readonly dataSource: DataSource,
     @Inject(MAIL_SERVICE) private readonly mail: MailService,
     @InjectRepository(EmailVerificationToken)
     private readonly evtRepo: Repository<EmailVerificationToken>,
@@ -66,12 +70,32 @@ export class AuthService {
     email: string;
     password: string;
     companyName?: string;
+    /** Optional pre-selected plan from /signup. See §6.2 of the eng doc. */
+    planId?: PlanSlug;
+    billingCycle?: BillingCycle;
     ip?: string | null;
   }): Promise<
-    | { userId: string; autoLogin: false }
-    | { userId: string; autoLogin: true; user: PublicUser; tokens: IssuedTokens }
+    | { userId: string; autoLogin: false; pendingUpgrade: boolean; pendingPlan: PlanSlug | null }
+    | {
+        userId: string;
+        autoLogin: true;
+        user: PublicUser;
+        tokens: IssuedTokens;
+        pendingUpgrade: boolean;
+        pendingPlan: PlanSlug | null;
+      }
   > {
     const email = input.email.toLowerCase();
+
+    // §11 decision #3 — enterprise self-serve registration is not allowed.
+    if (input.planId === 'enterprise') {
+      throw new BadRequestException({
+        error: 'enterprise_requires_sales',
+        message:
+          'Enterprise requires a sales conversation. Please contact us at /contact.',
+      });
+    }
+
     const existing = await this.users.findByEmail(email);
     if (existing) {
       throw new ConflictException({
@@ -81,13 +105,42 @@ export class AuthService {
     }
     const passwordHash = await hashPassword(input.password);
     const verificationRequired = this.cfg.emailVerificationRequired;
-    const user = await this.users.create({
-      fullName: input.fullName,
-      email,
-      companyName: input.companyName?.trim() || null,
-      passwordHash,
-      emailVerified: !verificationRequired,
-    });
+
+    // Resolve whether a paid PCR should be created (§6.2 Path B).
+    // (Enterprise was rejected above, so reaching here implies free|starter|pro|business.)
+    const wantsPaidUpgrade = !!input.planId && input.planId !== 'free';
+    const billingCycle: BillingCycle = input.billingCycle ?? 'monthly';
+
+    // Create user + Free subscription (+ optional pending PCR) atomically
+    // so a half-registered user can never exist.
+    const { user, pendingUpgrade } = await this.dataSource.transaction(
+      async (m) => {
+        const userEntity = m.create(User, {
+          fullName: input.fullName,
+          email,
+          companyName: input.companyName?.trim() || null,
+          passwordHash,
+          emailVerified: !verificationRequired,
+        });
+        const savedUser = await m.save(userEntity);
+
+        // Always live on Free initially — even paid signups.
+        await this.subscriptions.createInitialFreeInTx(m, savedUser.id, new Date());
+
+        let pendingUpgrade = false;
+        if (wantsPaidUpgrade) {
+          await this.subscriptions.createOrSupersedePendingPcr({
+            em: m,
+            userId: savedUser.id,
+            fromPlanId: 'free',
+            toPlanId: input.planId!,
+            billingCycle,
+          });
+          pendingUpgrade = true;
+        }
+        return { user: savedUser, pendingUpgrade };
+      },
+    );
 
     if (verificationRequired) {
       await this.issueEmailVerification(user.id, user.email, user.fullName);
@@ -97,11 +150,39 @@ export class AuthService {
       actorUserId: user.id,
       action: 'user.register',
       ip: input.ip ?? null,
-      meta: { email: user.email },
+      meta: {
+        email: user.email,
+        ...(input.planId ? { requestedPlanId: input.planId, billingCycle } : {}),
+      },
     });
 
+    // Best-effort ops notification on paid upgrade requests (Path B §6.2).
+    if (wantsPaidUpgrade) {
+      void this.mail
+        .sendTemplate({
+          to: this.cfg.get('CONTACT_INBOX_EMAIL'),
+          template: 'contact-received',
+          data: {
+            name: input.fullName,
+            email: user.email,
+            companyName: input.companyName ?? undefined,
+            message: `New signup requesting upgrade to ${input.planId} (${billingCycle}). userId=${user.id}`,
+          },
+          replyTo: user.email,
+        })
+        .catch(() => undefined);
+    }
+
+    const pendingPlan: PlanSlug | null =
+      wantsPaidUpgrade && input.planId ? input.planId : null;
+
     if (verificationRequired) {
-      return { userId: user.id, autoLogin: false };
+      return {
+        userId: user.id,
+        autoLogin: false,
+        pendingUpgrade,
+        pendingPlan,
+      };
     }
 
     // Auto-login: issue the same token pair `login()` would and let the
@@ -124,6 +205,8 @@ export class AuthService {
       autoLogin: true,
       user: this.users.toPublic(user),
       tokens,
+      pendingUpgrade,
+      pendingPlan,
     };
   }
 

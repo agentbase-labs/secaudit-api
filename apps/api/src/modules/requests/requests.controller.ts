@@ -20,6 +20,7 @@ import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import type { CurrentUserData } from '../../common/decorators/current-user.decorator';
 import { EmailVerifiedGuard } from '../../common/guards/email-verified.guard';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
+import { PlanCapGuard } from '../plans/guards/plan-cap.guard';
 import { UsersService } from '../users/users.service';
 import { CreateRequestDto } from './dto/create-request.dto';
 import { PatchRequestDto } from './dto/patch-request.dto';
@@ -54,6 +55,7 @@ export class RequestsController {
   }
 
   @Post()
+  @UseGuards(PlanCapGuard)
   @HttpCode(HttpStatus.CREATED)
   @Audit('request.create')
   async create(

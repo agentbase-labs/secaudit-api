@@ -1,5 +1,10 @@
-import { IsEmail, IsOptional, IsString, Length, Matches, MaxLength, MinLength } from 'class-validator';
+import { IsEmail, IsEnum, IsOptional, IsString, Length, Matches, MaxLength, MinLength } from 'class-validator';
 import { Transform } from 'class-transformer';
+
+// Plan-slug + billing-cycle literal sets, matching
+// `packages/shared/src/validation/auth.ts` zod enums.
+const PLAN_SLUGS = ['free', 'starter', 'pro', 'business', 'enterprise'] as const;
+const BILLING_CYCLES = ['monthly', 'annual'] as const;
 
 export class RegisterDto {
   @IsString()
@@ -24,4 +29,22 @@ export class RegisterDto {
   @IsString()
   @MaxLength(200)
   companyName?: string;
+
+  /**
+   * Optional pre-selected plan from the marketing /signup page.
+   * - undefined or 'free' → user lands on Free immediately.
+   * - 'starter' | 'pro' | 'business' → user lands on Free + a pending
+   *   PlanChangeRequest is created (admin must approve in MVP).
+   * - 'enterprise' → rejected with 400 (§11 decision #3); the user must
+   *   go through the /contact form for a sales conversation.
+   */
+  @IsOptional()
+  @IsString()
+  @IsEnum(PLAN_SLUGS)
+  planId?: (typeof PLAN_SLUGS)[number];
+
+  @IsOptional()
+  @IsString()
+  @IsEnum(BILLING_CYCLES)
+  billingCycle?: (typeof BILLING_CYCLES)[number];
 }

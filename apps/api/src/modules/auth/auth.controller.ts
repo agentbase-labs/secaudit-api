@@ -19,6 +19,7 @@ import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import type { CurrentUserData } from '../../common/decorators/current-user.decorator';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { UsersService } from '../users/users.service';
+import { SubscriptionsService } from '../plans/subscriptions.service';
 import { AuthService } from './auth.service';
 import { ForgotPasswordDto, ResendVerificationDto } from './dto/forgot-password.dto';
 import { LoginDto } from './dto/login.dto';
@@ -33,6 +34,7 @@ export class AuthController {
   constructor(
     private readonly auth: AuthService,
     private readonly users: UsersService,
+    private readonly subscriptions: SubscriptionsService,
   ) {}
 
   // -------- Public endpoints --------
@@ -51,6 +53,8 @@ export class AuthController {
       email: dto.email,
       password: dto.password,
       companyName: dto.companyName,
+      planId: dto.planId,
+      billingCycle: dto.billingCycle,
       ip: req.ip ?? null,
     });
     if (result.autoLogin) {
@@ -62,9 +66,16 @@ export class AuthController {
         userId: result.userId,
         accessToken: result.tokens.accessToken,
         user: result.user,
+        pendingUpgrade: result.pendingUpgrade,
+        pendingPlan: result.pendingPlan,
       };
     }
-    return { userId: result.userId, message: 'Verification email sent' };
+    return {
+      userId: result.userId,
+      message: 'Verification email sent',
+      pendingUpgrade: result.pendingUpgrade,
+      pendingPlan: result.pendingPlan,
+    };
   }
 
   @Public()
@@ -151,7 +162,17 @@ export class AuthController {
   @Get('me')
   async me(@CurrentUser() user: CurrentUserData) {
     const u = await this.users.requireById(user.id);
-    return this.users.toPublic(u);
+    const publicUser = this.users.toPublic(u);
+    // Embed the active subscription block (§3.2 of the eng doc) so the
+    // dashboard banner can render the pending-upgrade state in one round-trip.
+    let me;
+    try {
+      me = await this.subscriptions.getMeSubscription(u.id);
+    } catch {
+      // Defensive — if a legacy user somehow lacks a sub, fall back to user-only.
+      return publicUser;
+    }
+    return { ...publicUser, subscription: me.subscription, usage: me.usage };
   }
 }
 

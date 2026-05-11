@@ -18,6 +18,7 @@ import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import type { CurrentUserData } from '../../common/decorators/current-user.decorator';
 import { EmailVerifiedGuard } from '../../common/guards/email-verified.guard';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
+import { RetentionGuard } from '../plans/guards/retention.guard';
 import { DownloadReportDto } from './dto/download.dto';
 import { ReportsService } from './reports.service';
 
@@ -34,6 +35,7 @@ export class ReportsController {
    * audit-logged as `report.password.viewed`.
    */
   @Get(':id')
+  @UseGuards(RetentionGuard)
   async meta(
     @CurrentUser() me: CurrentUserData,
     @Req() req: ExpressReq,
@@ -47,6 +49,7 @@ export class ReportsController {
    * No password in the request body \u2014 ownership is enforced via JWT.
    */
   @Get(':id/download')
+  @UseGuards(RetentionGuard)
   @Audit('report.download')
   async downloadGet(
     @CurrentUser() me: CurrentUserData,
@@ -60,6 +63,7 @@ export class ReportsController {
    * Legacy password-gated download (kept for backwards-compat).
    */
   @Post(':id/download')
+  @UseGuards(RetentionGuard)
   @HttpCode(HttpStatus.OK)
   @Throttle({ default: { limit: 5, ttl: 60 * 60 * 1000 } })
   @Audit('report.download')

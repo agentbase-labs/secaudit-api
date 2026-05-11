@@ -91,6 +91,14 @@ export const EnvSchema = z.object({
   // verification email is sent, and login skips the verified-email gate.
   // Toggle on once a real outbound mail provider (Resend) is wired.
   EMAIL_VERIFICATION_REQUIRED: booleanString.default(false),
+
+  // Master kill-switch for plan-cap enforcement. When 'false' (default),
+  // every plan-related guard short-circuits to allow the request. Flip to
+  // 'true' in a separate deploy after Step 6 of the rollout plan
+  // (`design/plans/03-plan-engineering.md` §8). Stored as a string
+  // (matches the engineering doc) so the toggle is unambiguously textual
+  // in deploy panels.
+  PLAN_CAPS_ENFORCED: z.string().default('false'),
 });
 
 export type AppEnv = z.infer<typeof EnvSchema>;

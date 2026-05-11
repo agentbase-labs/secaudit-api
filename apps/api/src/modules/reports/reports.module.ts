@@ -6,9 +6,10 @@ import { Report } from './entities/report.entity';
 import { ReportsController } from './reports.controller';
 import { ReportsService } from './reports.service';
 import { ManualReportGenerator, REPORT_GENERATOR } from './report-generator';
+import { PlansModule } from '../plans/plans.module';
 
 @Module({
-  imports: [TypeOrmModule.forFeature([Report, TestingRequest, User])],
+  imports: [TypeOrmModule.forFeature([Report, TestingRequest, User]), PlansModule],
   controllers: [ReportsController],
   providers: [
     ReportsService,

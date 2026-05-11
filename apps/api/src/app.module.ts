@@ -27,6 +27,7 @@ import { AdminUsersModule } from './modules/admin-users/admin-users.module';
 import { PublicModule } from './modules/public/public.module';
 import { HealthModule } from './modules/health/health.module';
 import { CronModule } from './modules/cron/cron.module';
+import { PlansModule } from './modules/plans/plans.module';
 
 @Module({
   imports: [
@@ -57,6 +58,7 @@ import { CronModule } from './modules/cron/cron.module';
     PublicModule,
     HealthModule,
     CronModule,
+    PlansModule,
   ],
   providers: [
     { provide: APP_FILTER, useClass: HttpExceptionFilter },

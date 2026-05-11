@@ -6,6 +6,7 @@ export * from './types/user';
 export * from './types/request';
 export * from './types/report';
 export * from './types/auto-scan';
+export * from './types/plan';
 
 export * from './validation/auth';
 export * from './validation/request-details';
