@@ -28,6 +28,7 @@ import { PublicModule } from './modules/public/public.module';
 import { HealthModule } from './modules/health/health.module';
 import { CronModule } from './modules/cron/cron.module';
 import { PlansModule } from './modules/plans/plans.module';
+import { DemoScanModule } from './modules/demo-scan/demo-scan.module';
 
 @Module({
   imports: [
@@ -59,6 +60,7 @@ import { PlansModule } from './modules/plans/plans.module';
     HealthModule,
     CronModule,
     PlansModule,
+    DemoScanModule,
   ],
   providers: [
     { provide: APP_FILTER, useClass: HttpExceptionFilter },
