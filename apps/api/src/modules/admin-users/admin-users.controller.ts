@@ -28,6 +28,11 @@ import { UpdateUserDto } from './dto/update-user.dto';
 export class AdminUsersController {
   constructor(private readonly users: AdminUsersService) {}
 
+  @Get(':id')
+  async detail(@Param('id', ParseUUIDPipe) id: string) {
+    return this.users.getDetail(id);
+  }
+
   @Get()
   async list(
     @Query('q') search?: string,

@@ -26,7 +26,7 @@ function makePcr(overrides: Partial<PlanChangeRequest> = {}): PlanChangeRequest 
   return {
     id: 'pcr-1',
     userId: USER_ID,
-    fromPlanId: 'free',
+    fromPlanId: 'starter',
     toPlanId: 'pro',
     billingCycle: 'monthly',
     status: PlanChangeRequestStatus.PENDING,
@@ -64,7 +64,7 @@ async function makeHarness(opts: { pendingPcr?: PlanChangeRequest | null } = {})
   const users = { findById: jest.fn().mockResolvedValue(null) };
 
   const subs = {
-    requireActive: jest.fn().mockResolvedValue({ planId: 'free', userId: USER_ID }),
+    requireActive: jest.fn().mockResolvedValue({ planId: 'starter', userId: USER_ID }),
     createOrSupersedePendingPcr: jest.fn().mockResolvedValue(makePcr()),
     applyPlanChange: jest.fn(),
   } as unknown as SubscriptionsService;

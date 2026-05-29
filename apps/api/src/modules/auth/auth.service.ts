@@ -106,13 +106,14 @@ export class AuthService {
     const passwordHash = await hashPassword(input.password);
     const verificationRequired = this.cfg.emailVerificationRequired;
 
-    // Resolve whether a paid PCR should be created (§6.2 Path B).
-    // (Enterprise was rejected above, so reaching here implies free|starter|pro|business.)
-    const wantsPaidUpgrade = !!input.planId && input.planId !== 'free';
+    // Resolve the target plan. Free is gone — new signups default to Starter.
+    // (Enterprise was rejected above, so reaching here implies starter|pro|business.)
+    const targetPlan: PlanSlug = input.planId ?? 'starter';
     const billingCycle: BillingCycle = input.billingCycle ?? 'monthly';
 
-    // Create user + Free subscription (+ optional pending PCR) atomically
-    // so a half-registered user can never exist.
+    // Create user + initial Starter (pending) subscription + a pending PCR to
+    // the target plan, atomically, so a half-registered user can never exist.
+    // Every signup now lands in the same 1-business-day admin review flow.
     const { user, pendingUpgrade } = await this.dataSource.transaction(
       async (m) => {
         const userEntity = m.create(User, {
@@ -124,21 +125,23 @@ export class AuthService {
         });
         const savedUser = await m.save(userEntity);
 
-        // Always live on Free initially — even paid signups.
-        await this.subscriptions.createInitialFreeInTx(m, savedUser.id, new Date());
+        // Always start on a Starter subscription in PENDING_UPGRADE state.
+        await this.subscriptions.createInitialStarterPendingInTx(
+          m,
+          savedUser.id,
+          new Date(),
+        );
 
-        let pendingUpgrade = false;
-        if (wantsPaidUpgrade) {
-          await this.subscriptions.createOrSupersedePendingPcr({
-            em: m,
-            userId: savedUser.id,
-            fromPlanId: 'free',
-            toPlanId: input.planId!,
-            billingCycle,
-          });
-          pendingUpgrade = true;
-        }
-        return { user: savedUser, pendingUpgrade };
+        // Pending plan-change request to the target plan (defaults to starter)
+        // — admin must approve. fromPlanId mirrors the initial starter sub.
+        await this.subscriptions.createOrSupersedePendingPcr({
+          em: m,
+          userId: savedUser.id,
+          fromPlanId: 'starter',
+          toPlanId: targetPlan,
+          billingCycle,
+        });
+        return { user: savedUser, pendingUpgrade: true };
       },
     );
 
@@ -152,39 +155,37 @@ export class AuthService {
       ip: input.ip ?? null,
       meta: {
         email: user.email,
-        ...(input.planId ? { requestedPlanId: input.planId, billingCycle } : {}),
+        requestedPlanId: targetPlan,
+        billingCycle,
       },
     });
 
-    // Best-effort ops notification on paid upgrade requests (Path B §6.2).
-    if (wantsPaidUpgrade) {
-      void this.mail
-        .sendTemplate({
-          to: this.cfg.get('CONTACT_INBOX_EMAIL'),
-          template: 'contact-received',
-          data: {
-            name: input.fullName,
-            email: user.email,
-            companyName: input.companyName ?? undefined,
-            message: `New signup requesting upgrade to ${input.planId} (${billingCycle}). userId=${user.id}`,
-          },
-          replyTo: user.email,
-        })
-        .catch(() => undefined);
-    }
+    // Best-effort ops notification — every signup is now a pending plan review.
+    void this.mail
+      .sendTemplate({
+        to: this.cfg.get('CONTACT_INBOX_EMAIL'),
+        template: 'contact-received',
+        data: {
+          name: input.fullName,
+          email: user.email,
+          companyName: input.companyName ?? undefined,
+          message: `New signup requesting ${targetPlan} (${billingCycle}). userId=${user.id}`,
+        },
+        replyTo: user.email,
+      })
+      .catch(() => undefined);
 
-    // Welcome email — fire-and-forget. Always sent (paid or free signup).
-    // For paid signups we tell the user their upgrade is pending review.
+    // Welcome email — fire-and-forget. Always sent. The user lands on Starter
+    // (pending) and we tell them their plan is pending review.
     void this.mail
       .sendTemplate({
         to: user.email,
         template: 'welcome-signup',
         data: {
           fullName: user.fullName,
-          planName: prettyPlanName('free'),
-          pendingUpgrade: wantsPaidUpgrade,
-          pendingPlanName:
-            wantsPaidUpgrade && input.planId ? prettyPlanName(input.planId) : undefined,
+          planName: prettyPlanName('starter'),
+          pendingUpgrade: true,
+          pendingPlanName: prettyPlanName(targetPlan),
           dashboardUrl: `${this.cfg.get('APP_URL')}/dashboard`,
         },
       })
@@ -192,8 +193,7 @@ export class AuthService {
         this.logger.warn(`welcome-signup send failed: ${(e as Error).message}`),
       );
 
-    const pendingPlan: PlanSlug | null =
-      wantsPaidUpgrade && input.planId ? input.planId : null;
+    const pendingPlan: PlanSlug | null = targetPlan;
 
     if (verificationRequired) {
       return {
@@ -542,8 +542,6 @@ export class AuthService {
  */
 function prettyPlanName(slug: string): string {
   switch (slug) {
-    case 'free':
-      return 'Free';
     case 'starter':
       return 'Starter';
     case 'pro':

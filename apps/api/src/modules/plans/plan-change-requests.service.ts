@@ -43,8 +43,6 @@ export class PlanChangeRequestsService {
 
   private prettyPlanName(slug: string): string {
     switch (slug) {
-      case 'free':
-        return 'Free';
       case 'starter':
         return 'Starter';
       case 'pro':

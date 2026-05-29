@@ -68,13 +68,13 @@ async function makeHarness(opts: {
   // Subscription stub for requestChange path
   const subs = {
     requireActive: jest.fn().mockResolvedValue({
-      planId: opts.subForRequest?.planId ?? 'free',
+      planId: opts.subForRequest?.planId ?? 'starter',
       userId: user.id,
     }),
     createOrSupersedePendingPcr: jest.fn().mockResolvedValue({
       id: 'pcr-1',
       userId: user.id,
-      fromPlanId: 'free',
+      fromPlanId: 'starter',
       toPlanId: 'pro',
       billingCycle: 'monthly',
       status: PlanChangeRequestStatus.PENDING,
@@ -95,7 +95,7 @@ async function makeHarness(opts: {
   const pcrEntity: PlanChangeRequest = {
     id: 'pcr-1',
     userId: user.id,
-    fromPlanId: 'free',
+    fromPlanId: 'starter',
     toPlanId: 'pro',
     billingCycle: 'monthly',
     status: PlanChangeRequestStatus.PENDING,
@@ -154,7 +154,7 @@ describe('PlanChangeRequestsService — email side-effects', () => {
     expect(userMail!.to).toBe(user.email);
     expect(userMail!.data).toMatchObject({
       fullName: user.fullName,
-      fromPlanName: 'Free',
+      fromPlanName: 'Starter',
       toPlanName: 'Pro',
       billingCycle: 'monthly',
     });
@@ -165,7 +165,7 @@ describe('PlanChangeRequestsService — email side-effects', () => {
       userEmail: user.email,
       userFullName: user.fullName,
       companyName: 'Acme Corp',
-      fromPlanName: 'Free',
+      fromPlanName: 'Starter',
       toPlanName: 'Pro',
       billingCycle: 'monthly',
       pcrId: 'pcr-1',

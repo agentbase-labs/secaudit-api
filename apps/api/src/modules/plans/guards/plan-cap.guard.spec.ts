@@ -82,7 +82,7 @@ describe('PlanCapGuard', () => {
 
     const capsService = {
       getCaps: jest.fn().mockResolvedValue({
-        planId: 'free',
+        planId: 'starter',
         caps: opts.caps ?? freshCaps(),
         subscriptionId: 'sub-1',
       }),
@@ -192,7 +192,7 @@ describe('PlanCapGuard', () => {
     });
   });
 
-  it('rejects mobile uploads when mobileUploadMaxMb is 0 (free/starter)', async () => {
+  it('rejects mobile uploads when mobileUploadMaxMb is 0 (starter)', async () => {
     const guard = buildGuard({
       envEnforced: true,
       caps: freshCaps({ mobileUploadMaxMb: 0 }),

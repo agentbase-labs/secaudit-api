@@ -33,15 +33,6 @@ const REQUIRED_CAP_KEYS = [
 
 const SEED_PLANS: Partial<Plan>[] = [
   {
-    id: 'free',
-    name: 'Free',
-    monthlyPriceUsdCents: 0,
-    annualPriceUsdCents: 0,
-    isPublic: true,
-    sortOrder: 10,
-    caps: capsFor({ submissionsPerMonth: 1, registeredAssetsMax: 1, retentionDays: 30 }),
-  } as Plan,
-  {
     id: 'starter',
     name: 'Starter',
     monthlyPriceUsdCents: 4900,
@@ -125,12 +116,11 @@ describe('GET /public/plans (e2e)', () => {
     controller = moduleRef.get(PlansController);
   });
 
-  it('returns exactly the 5 product tiers', async () => {
+  it('returns exactly the 4 product tiers', async () => {
     const body = await controller.listPublic();
     expect(Array.isArray(body.plans)).toBe(true);
-    expect(body.plans).toHaveLength(5);
+    expect(body.plans).toHaveLength(4);
     expect(body.plans.map((p) => p.id)).toEqual([
-      'free',
       'starter',
       'pro',
       'business',

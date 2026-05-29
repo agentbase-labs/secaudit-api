@@ -16,7 +16,7 @@ export const emailSchema = z.string().trim().toLowerCase().email('Invalid email 
  * `/public/plans` from the API. Kept in sync with
  * `design/plans/02-secaudit-plans.md`.
  */
-export const PlanSlugSchema = z.enum(['free', 'starter', 'pro', 'business', 'enterprise']);
+export const PlanSlugSchema = z.enum(['starter', 'pro', 'business', 'enterprise']);
 export type PlanSlug = z.infer<typeof PlanSlugSchema>;
 
 export const BillingCycleSchema = z.enum(['monthly', 'annual']);
@@ -27,8 +27,8 @@ export const RegisterSchema = z.object({
   email: emailSchema,
   password: passwordSchema,
   companyName: z.string().trim().max(200).optional().or(z.literal('')),
-  // Optional today (server defaults to `free` if absent). Once the
-  // plans backend ships these become required client-side.
+  // Optional today (server defaults to `starter` (pending review) if absent).
+  // Once the plans backend ships these become required client-side.
   planId: PlanSlugSchema.optional(),
   billingCycle: BillingCycleSchema.optional(),
 });
