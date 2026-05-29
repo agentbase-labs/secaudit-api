@@ -13,7 +13,6 @@
     "typecheck": "pnpm -r typecheck",
     "test": "pnpm -r test",
     "api": "pnpm --filter @cs-platform/api",
-    "web": "pnpm --filter @cs-platform/web",
     "shared": "pnpm --filter @cs-platform/shared",
     "migration:generate": "pnpm api migration:generate",
     "migration:run": "pnpm api migration:run",
