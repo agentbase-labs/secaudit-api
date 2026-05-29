@@ -7,7 +7,7 @@ import { PlanCapsService } from './plan-caps.service';
 import { Subscription } from './entities/subscription.entity';
 
 /**
- * Spec: every seed plan (free/starter/pro/business/enterprise) yields the
+ * Spec: every seed plan (starter/pro/business/enterprise) yields the
  * caps that doc 02 \u00a71 specifies. Source-of-truth crosscheck.
  */
 
@@ -26,17 +26,6 @@ interface SeedSpec {
 // EXACT mirror of `1740000000000-plans-and-subscriptions.ts` seed.
 // If this drifts from the migration, the migration is wrong (or this test is).
 const SEEDS: Record<string, SeedSpec> = {
-  free: {
-    planId: 'free',
-    submissionsPerMonth: 1,
-    registeredAssetsMax: 1,
-    manualPentestsPerYear: 0,
-    mobileUploadMaxMb: 0,
-    retentionDays: 30,
-    redTeamEnabled: false,
-    ssoEnabled: false,
-    allowedTestingTypesIncludes: ['vuln_scan'],
-  },
   starter: {
     planId: 'starter',
     submissionsPerMonth: 3,
@@ -156,7 +145,7 @@ describe('PlanCapsService.getCaps', () => {
   );
 
   it('memoizes within the same request (single DB call)', async () => {
-    const svc = await makeService(SEEDS.free!);
+    const svc = await makeService(SEEDS.starter!);
     const repo = (svc as unknown as { subs: Repository<Subscription> }).subs;
     const findSpy = jest.spyOn(repo, 'findOne');
 

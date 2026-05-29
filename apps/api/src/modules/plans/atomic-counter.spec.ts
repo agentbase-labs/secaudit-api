@@ -55,11 +55,11 @@ async function buildService(args: {
   const fakeSub = {
     id: 'sub-1',
     userId,
-    planId: args.planId ?? 'free',
+    planId: args.planId ?? 'starter',
     status: SubscriptionStatus.ACTIVE,
     plan: {
-      id: args.planId ?? 'free',
-      name: args.planId ?? 'free',
+      id: args.planId ?? 'starter',
+      name: args.planId ?? 'starter',
       caps: args.caps ?? makeCapsRow(),
     },
   };
@@ -156,7 +156,7 @@ describe('PlanCapsService.atomicIncrementAndCheck', () => {
 
   it('throws PlanCapExceededException with cap=SUBMISSIONS_PER_MONTH when post-increment > submissionsPerMonth', async () => {
     const svc = await buildService({
-      planId: 'free',
+      planId: 'starter',
       caps: makeCapsRow({ submissionsPerMonth: 1 }),
     });
     // RETURNING value of 2 means a second concurrent caller saw the counter
@@ -176,7 +176,7 @@ describe('PlanCapsService.atomicIncrementAndCheck', () => {
         cap: 'SUBMISSIONS_PER_MONTH',
         max: 1,
         current: 1,
-        suggestUpgradeTo: 'starter',
+        suggestUpgradeTo: 'pro',
       }),
     });
   });

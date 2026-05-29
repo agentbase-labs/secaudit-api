@@ -3,7 +3,7 @@ import { Transform } from 'class-transformer';
 
 // Plan-slug + billing-cycle literal sets, matching
 // `packages/shared/src/validation/auth.ts` zod enums.
-const PLAN_SLUGS = ['free', 'starter', 'pro', 'business', 'enterprise'] as const;
+const PLAN_SLUGS = ['starter', 'pro', 'business', 'enterprise'] as const;
 const BILLING_CYCLES = ['monthly', 'annual'] as const;
 
 export class RegisterDto {
@@ -32,9 +32,12 @@ export class RegisterDto {
 
   /**
    * Optional pre-selected plan from the marketing /signup page.
-   * - undefined or 'free' → user lands on Free immediately.
-   * - 'starter' | 'pro' | 'business' → user lands on Free + a pending
-   *   PlanChangeRequest is created (admin must approve in MVP).
+   * - undefined → defaults to 'starter'; the user lands on a Starter
+   *   subscription (status pending) + a pending PlanChangeRequest
+   *   (admin must approve in MVP — same 1-business-day review flow).
+   * - 'starter' | 'pro' | 'business' → user lands on a Starter subscription
+   *   (status pending) + a pending PlanChangeRequest to the chosen plan
+   *   (admin must approve in MVP).
    * - 'enterprise' → rejected with 400 (§11 decision #3); the user must
    *   go through the /contact form for a sales conversation.
    */

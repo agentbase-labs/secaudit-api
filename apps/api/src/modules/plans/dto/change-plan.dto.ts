@@ -1,6 +1,6 @@
 import { IsEnum, IsOptional, IsString, MaxLength } from 'class-validator';
 
-const PLAN_SLUGS = ['free', 'starter', 'pro', 'business', 'enterprise'] as const;
+const PLAN_SLUGS = ['starter', 'pro', 'business', 'enterprise'] as const;
 const BILLING_CYCLES = ['monthly', 'annual'] as const;
 
 export class ChangePlanDto {

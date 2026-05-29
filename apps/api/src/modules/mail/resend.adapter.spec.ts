@@ -32,7 +32,7 @@ const sampleArgs = {
   template: 'welcome-signup' as const,
   data: {
     fullName: 'Jane Doe',
-    planName: 'Free',
+    planName: 'Starter',
     pendingUpgrade: false,
     dashboardUrl: 'https://app.secaudit.xyz/dashboard',
   },

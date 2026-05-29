@@ -2,7 +2,6 @@ import type { PlanSlug } from '@cs-platform/shared';
 
 /** Authoritative plan-slug ordering for "next tier above" upgrade hints. */
 export const PLAN_LADDER: PlanSlug[] = [
-  'free',
   'starter',
   'pro',
   'business',

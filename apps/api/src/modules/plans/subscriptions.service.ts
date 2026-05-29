@@ -123,14 +123,24 @@ export class SubscriptionsService {
   }
 
   /**
-   * Create a subscription row inside an existing transaction. Used by
-   * AuthService.register so the user + sub are persisted atomically.
+   * Create the initial Starter (pending review) subscription row inside an
+   * existing transaction. Used by AuthService.register so the user + sub are
+   * persisted atomically.
+   *
+   * New signups default to Starter and land in a PENDING_UPGRADE state
+   * (pre-Stripe 1-business-day admin review). A pending PlanChangeRequest
+   * to the requested/default plan accompanies this sub (created by the
+   * caller via createOrSupersedePendingPcr).
    */
-  async createInitialFreeInTx(em: EntityManager, userId: string, startedAt: Date): Promise<Subscription> {
+  async createInitialStarterPendingInTx(
+    em: EntityManager,
+    userId: string,
+    startedAt: Date,
+  ): Promise<Subscription> {
     const entity = em.create(Subscription, {
       userId,
-      planId: 'free',
-      status: SubscriptionStatus.ACTIVE,
+      planId: 'starter',
+      status: SubscriptionStatus.PENDING_UPGRADE,
       billingCycle: null,
       startedAt,
       currentPeriodEnd: null,
@@ -208,17 +218,13 @@ export class SubscriptionsService {
     sub.billingCycle = billingCycle;
     sub.requestedPlanId = null;
     const now = new Date();
-    if (toPlanId === 'free') {
-      sub.currentPeriodEnd = null;
+    const end = new Date(now);
+    if (billingCycle === 'annual') {
+      end.setUTCFullYear(end.getUTCFullYear() + 1);
     } else {
-      const end = new Date(now);
-      if (billingCycle === 'annual') {
-        end.setUTCFullYear(end.getUTCFullYear() + 1);
-      } else {
-        end.setUTCMonth(end.getUTCMonth() + 1);
-      }
-      sub.currentPeriodEnd = end;
+      end.setUTCMonth(end.getUTCMonth() + 1);
     }
+    sub.currentPeriodEnd = end;
     await em.save(sub);
     // Reload with plan relation for response shape.
     const reloaded = await em.findOne(Subscription, {

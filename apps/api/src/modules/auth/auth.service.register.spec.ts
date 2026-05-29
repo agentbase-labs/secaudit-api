@@ -19,12 +19,15 @@ import { PasswordResetToken } from './entities/password-reset-token.entity';
 import { RefreshToken } from './entities/refresh-token.entity';
 
 /**
- * Behavioural tests for the new register flow paths.
+ * Behavioural tests for the register flow paths.
  *
- *   - planId='pro'        -> User created, Subscription on 'free' (NOT pro),
- *                            PlanChangeRequest pending fromPlan='free' toPlan='pro'.
+ * Free is gone — new signups default to Starter and land in the pending
+ * admin-review flow (Starter sub in PENDING_UPGRADE + a pending PCR).
+ *
+ *   - planId='pro'        -> User created, Subscription on 'starter' (pending),
+ *                            PlanChangeRequest pending fromPlan='starter' toPlan='pro'.
  *   - planId='enterprise' -> 400 with the canonical contact-sales message.
- *   - planId omitted      -> Original behaviour (Free sub created, no PCR).
+ *   - planId omitted      -> Starter (pending) sub + pending PCR to 'starter'.
  */
 
 interface SavedRows {
@@ -109,7 +112,7 @@ function buildHarness(opts: { emailVerificationRequired?: boolean } = {}) {
     {} as never,
     {} as never,
   );
-  // Real createInitialFreeInTx + createOrSupersedePendingPcr — they call em.create/save.
+  // Real createInitialStarterPendingInTx + createOrSupersedePendingPcr — they call em.create/save.
 
   const jwt = {
     signAsync: jest.fn().mockResolvedValue('signed-token'),
@@ -152,7 +155,7 @@ describe('AuthService.register — plan selection paths', () => {
     ).rejects.toBeInstanceOf(BadRequestException);
   });
 
-  it('register without planId behaves identically (Free sub, no PCR)', async () => {
+  it('register without planId defaults to Starter (pending) sub + pending PCR to starter', async () => {
     const { authService, saved } = buildHarness();
     const result = await authService.register({
       fullName: 'No Plan',
@@ -160,16 +163,19 @@ describe('AuthService.register — plan selection paths', () => {
       password: 'CorrectHorseBattery1!',
     });
     if (!result.autoLogin) throw new Error('expected autoLogin');
-    expect(result.pendingUpgrade).toBe(false);
-    expect(result.pendingPlan).toBeNull();
+    expect(result.pendingUpgrade).toBe(true);
+    expect(result.pendingPlan).toBe('starter');
     expect(saved.users).toHaveLength(1);
     expect(saved.subscriptions).toHaveLength(1);
-    expect(saved.subscriptions[0]!.planId).toBe('free');
-    expect(saved.subscriptions[0]!.status).toBe(SubscriptionStatus.ACTIVE);
-    expect(saved.pcrs).toHaveLength(0);
+    expect(saved.subscriptions[0]!.planId).toBe('starter');
+    expect(saved.subscriptions[0]!.status).toBe(SubscriptionStatus.PENDING_UPGRADE);
+    expect(saved.pcrs).toHaveLength(1);
+    expect(saved.pcrs[0]!.fromPlanId).toBe('starter');
+    expect(saved.pcrs[0]!.toPlanId).toBe('starter');
+    expect(saved.pcrs[0]!.status).toBe(PlanChangeRequestStatus.PENDING);
   });
 
-  it('register with planId=pro creates Free sub AND a pending PCR', async () => {
+  it('register with planId=pro creates Starter (pending) sub AND a pending PCR to pro', async () => {
     const { authService, saved } = buildHarness();
     const result = await authService.register({
       fullName: 'Pat Pro',
@@ -182,9 +188,10 @@ describe('AuthService.register — plan selection paths', () => {
     expect(result.pendingUpgrade).toBe(true);
     expect(result.pendingPlan).toBe('pro');
     expect(saved.subscriptions).toHaveLength(1);
-    expect(saved.subscriptions[0]!.planId).toBe('free');
+    expect(saved.subscriptions[0]!.planId).toBe('starter');
+    expect(saved.subscriptions[0]!.status).toBe(SubscriptionStatus.PENDING_UPGRADE);
     expect(saved.pcrs).toHaveLength(1);
-    expect(saved.pcrs[0]!.fromPlanId).toBe('free');
+    expect(saved.pcrs[0]!.fromPlanId).toBe('starter');
     expect(saved.pcrs[0]!.toPlanId).toBe('pro');
     expect(saved.pcrs[0]!.billingCycle).toBe('monthly');
     expect(saved.pcrs[0]!.status).toBe(PlanChangeRequestStatus.PENDING);
@@ -201,7 +208,7 @@ describe('AuthService.register — plan selection paths', () => {
     expect(saved.pcrs[0]!.billingCycle).toBe('monthly');
   });
 
-  it('free signup fires welcome-signup email with planName=Free, pendingUpgrade=false', async () => {
+  it('default signup fires welcome-signup email with planName=Starter, pendingUpgrade=true', async () => {
     const { authService, mail } = buildHarness();
     await authService.register({
       fullName: 'Welcome User',
@@ -217,8 +224,9 @@ describe('AuthService.register — plan selection paths', () => {
     expect(welcome!.to).toBe('welcome@example.com');
     expect(welcome!.data).toMatchObject({
       fullName: 'Welcome User',
-      planName: 'Free',
-      pendingUpgrade: false,
+      planName: 'Starter',
+      pendingUpgrade: true,
+      pendingPlanName: 'Starter',
     });
   });
 
@@ -238,7 +246,7 @@ describe('AuthService.register — plan selection paths', () => {
     expect(welcome).toBeDefined();
     expect(welcome!.data).toMatchObject({
       fullName: 'Pending Pro',
-      planName: 'Free',
+      planName: 'Starter',
       pendingUpgrade: true,
       pendingPlanName: 'Pro',
     });

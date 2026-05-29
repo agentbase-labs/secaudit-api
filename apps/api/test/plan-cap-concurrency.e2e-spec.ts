@@ -1,7 +1,7 @@
 /**
  * Concurrency e2e for the TOCTOU hardening on submissions counter.
  *
- * Goal: 5 simultaneous `POST /requests` for a Free user (cap=1) must
+ * Goal: 5 simultaneous `POST /requests` for a synthetic cap=1 user must
  * resolve to exactly 1 success and 4 PLAN_CAP_EXCEEDED 402s.
  *
  * Why this is not a real Postgres test:
@@ -100,8 +100,8 @@ class FakeAtomicCounter {
 }
 
 describe('POST /requests — TOCTOU concurrency hardening (e2e simulation)', () => {
-  // 5 concurrent submissions for a Free user (cap=1) → exactly 1 wins.
-  const FREE_CAPS = {
+  // 5 concurrent submissions for a synthetic cap=1 user → exactly 1 wins.
+  const STARTER_CAPS = {
     submissionsPerMonth: 1,
     registeredAssetsMax: -1,
     manualPentestsPerYear: 0,
@@ -162,9 +162,9 @@ describe('POST /requests — TOCTOU concurrency hardening (e2e simulation)', () 
       findOne: jest.fn().mockResolvedValue({
         id: 'sub-1',
         userId,
-        planId: 'free',
+        planId: 'starter',
         status: SubscriptionStatus.ACTIVE,
-        plan: { id: 'free', name: 'Free', caps: FREE_CAPS },
+        plan: { id: 'starter', name: 'Starter', caps: STARTER_CAPS },
       }),
     };
 
@@ -198,7 +198,7 @@ describe('POST /requests — TOCTOU concurrency hardening (e2e simulation)', () 
     return { svc, counter, getRevertedTransactions: () => revertedTransactions };
   }
 
-  it('5 concurrent submissions on Free plan (cap=1) → exactly 1 success + 4 PLAN_CAP_EXCEEDED', async () => {
+  it('5 concurrent submissions on a synthetic cap=1 plan → exactly 1 success + 4 PLAN_CAP_EXCEEDED', async () => {
     const { svc, counter, getRevertedTransactions } = await buildSubject();
 
     const publicUser = {
@@ -278,9 +278,9 @@ describe('POST /requests — TOCTOU concurrency hardening (e2e simulation)', () 
       findOne: jest.fn().mockResolvedValue({
         id: 'sub-1',
         userId,
-        planId: 'free',
+        planId: 'starter',
         status: SubscriptionStatus.ACTIVE,
-        plan: { id: 'free', name: 'Free', caps: FREE_CAPS },
+        plan: { id: 'starter', name: 'Starter', caps: STARTER_CAPS },
       }),
     };
 
