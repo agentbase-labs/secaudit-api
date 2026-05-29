@@ -28,7 +28,6 @@ WORKDIR /app
 FROM base AS deps
 COPY pnpm-workspace.yaml pnpm-lock.yaml package.json ./
 COPY apps/api/package.json apps/api/
-COPY apps/web/package.json apps/web/
 COPY packages/shared/package.json packages/shared/
 RUN --mount=type=cache,id=pnpm,target=/pnpm/store \
     pnpm install --frozen-lockfile
@@ -85,7 +84,7 @@ WORKDIR /app
 COPY --from=build /app /app
 # Strip the source we don't need at runtime to slim the image.
 RUN rm -rf /app/apps/api/src /app/apps/api/test /app/apps/api/tsconfig*.json \
-           /app/apps/web /app/tsconfig.base.json
+           /app/tsconfig.base.json
 
 # Run as the unprivileged `node` user that ships with the base image.
 USER node
