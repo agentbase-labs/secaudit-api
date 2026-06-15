@@ -46,6 +46,10 @@ export class UsageCounter {
   @Column({ type: 'int', default: 0 })
   manualPentestsCountYtd!: number;
 
+  /** Active/Deep scans consumed this period (active-scan monthly quota). */
+  @Column({ type: 'int', default: 0 })
+  activeScansCount!: number;
+
   /** bigint round-trips as string in node-pg. */
   @Column({ type: 'bigint', default: 0 })
   mobileUploadBytesUsed!: string;
