@@ -50,6 +50,17 @@ export interface PlanCaps {
   allowedAssetTypes: AssetType[];
   allowedTestingTypes: TestingType[];
 
+  // Active / Deep Scan caps (see ACTIVE_SCAN_DESIGN.md §7).
+  //  - activeScansPerMonth: 0 disables active scans entirely; -1 unlimited.
+  //  - activeScanConcurrency: max simultaneous running jobs for this user.
+  //  - activeScanMaxTargets: max verified targets retained (0 = none).
+  // Optional so historical seed rows (pre-active-scan) typecheck; the
+  // migration backfills all four tiers and the guard treats `undefined`
+  // exactly like `0` (disabled) — fail-closed.
+  activeScansPerMonth?: number;
+  activeScanConcurrency?: number;
+  activeScanMaxTargets?: number;
+
   // Boolean features
   redTeamEnabled: boolean;
   ssoEnabled: boolean;
@@ -110,6 +121,8 @@ export interface PublicUsageCounter {
   sourceReviewsCount: number;
   manualPentestsCountYtd: number;
   mobileUploadBytesUsed: string;
+  /** Active scans consumed in the current UTC month (active-scan feature). */
+  activeScansCount?: number;
 }
 
 export interface MeSubscriptionResponse {
