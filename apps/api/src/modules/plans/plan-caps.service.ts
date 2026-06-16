@@ -192,4 +192,80 @@ export class PlanCapsService {
       manualPentestsCountYtd: Number(r.manualPentestsCountYtd),
     };
   }
+
+  /**
+   * Atomically reserve an ACTIVE-SCAN slot for `userId` in the current UTC
+   * month, then verify the new count against `activeScansPerMonth`.
+   *
+   * Same TOCTOU-safe pattern as `atomicIncrementAndCheck` (design doc §7.3):
+   * one `INSERT … ON CONFLICT (userId, periodStart) DO UPDATE … RETURNING`
+   * round-trip, post-increment cap-check, caller's transaction rolls back on
+   * throw (which reverts the increment).
+   *
+   * MUST run inside a caller-provided transaction (`manager`).
+   *
+   * Cap semantics:
+   *   - activeScansPerMonth === -1 → unlimited (skip check).
+   *   - activeScansPerMonth === 0 / undefined → disabled (reject; but the
+   *     caller / guard should have rejected entitlement *before* calling
+   *     here — this is defense-in-depth).
+   *   - enforced=false → still increments (display accuracy) but never throws.
+   */
+  async atomicIncrementActiveScanAndCheck(
+    manager: EntityManager,
+    userId: string,
+    enforced: boolean,
+  ): Promise<void> {
+    if (!enforced) {
+      await this.runActiveScanIncrementSql(manager, userId);
+      return;
+    }
+
+    const { planId, caps } = await this.getCaps(userId);
+    const perMonth = caps.activeScansPerMonth ?? 0;
+
+    const count = await this.runActiveScanIncrementSql(manager, userId);
+
+    if (perMonth === -1) return; // unlimited
+
+    if (perMonth === 0 || count > perMonth) {
+      throw new PlanCapExceededException({
+        cap: 'ACTIVE_SCANS_PER_MONTH',
+        current: perMonth,
+        max: perMonth,
+        currentPlanId: planId,
+      });
+    }
+  }
+
+  /** UPSERT the activeScansCount and return the post-increment value. */
+  private async runActiveScanIncrementSql(
+    manager: EntityManager,
+    userId: string,
+  ): Promise<number> {
+    const periodStart = startOfUtcMonth(new Date());
+    const sql = `
+      INSERT INTO usage_counters
+        (id, "userId", "periodStart", "submissionsCount",
+         "sourceReviewsCount", "manualPentestsCountYtd", "activeScansCount",
+         "mobileUploadBytesUsed", "lastResetAt", "createdAt", "updatedAt")
+      VALUES
+        (gen_random_uuid(), $1, $2, 0, 0, 0, 1, 0, now(), now(), now())
+      ON CONFLICT ("userId", "periodStart") DO UPDATE SET
+        "activeScansCount" = usage_counters."activeScansCount" + 1,
+        "updatedAt" = now()
+      RETURNING "activeScansCount"
+    `;
+    const result = (await manager.query(sql, [userId, periodStart])) as Array<{
+      activeScansCount: number | string;
+    }>;
+    const r = result[0];
+    if (!r) {
+      throw new InternalServerErrorException({
+        error: 'usage_counter_upsert_failed',
+        message: 'Active-scan atomic counter upsert returned no rows',
+      });
+    }
+    return Number(r.activeScansCount);
+  }
 }

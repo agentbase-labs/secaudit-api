@@ -50,6 +50,41 @@ export class AppConfigService {
     return this.get('AUTOSCAN_TIER_2_ENABLED');
   }
 
+  /** Global active-scan feature flag (kill-switch). */
+  get activeScanEnabled(): boolean {
+    return this.get('ACTIVE_SCAN_ENABLED');
+  }
+
+  /** Shared secret for worker internal endpoints (empty = fail-closed). */
+  get activeScanWorkerSecret(): string {
+    return this.get('ACTIVE_SCAN_WORKER_SECRET').trim();
+  }
+
+  /**
+   * Secret for signing short-lived SSE stream tokens. Falls back to the JWT
+   * access secret so the feature works without extra config.
+   */
+  get streamTokenSecret(): string {
+    const explicit = this.get('SCAN_STREAM_TOKEN_SECRET').trim();
+    return explicit.length > 0 ? explicit : this.get('JWT_ACCESS_SECRET');
+  }
+
+  get streamTokenTtlSec(): number {
+    return this.get('SCAN_STREAM_TOKEN_TTL_SEC');
+  }
+
+  get activeScanVerifyTtlDays(): number {
+    return this.get('ACTIVE_SCAN_VERIFY_TTL_DAYS');
+  }
+
+  get activeScanDefaultMaxHosts(): number {
+    return this.get('ACTIVE_SCAN_DEFAULT_MAX_HOSTS');
+  }
+
+  get activeScanDefaultRate(): number {
+    return this.get('ACTIVE_SCAN_DEFAULT_RATE');
+  }
+
   /**
    * Whether TypeORM should negotiate TLS to Postgres. Defaults to true in
    * production (Render Postgres + most managed DBs require it) and false

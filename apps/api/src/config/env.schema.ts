@@ -96,6 +96,34 @@ export const EnvSchema = z.object({
   // Toggle on once a real outbound mail provider (Resend) is wired.
   EMAIL_VERIFICATION_REQUIRED: booleanString.default(false),
 
+  // ───────────────────────── Active / Deep Scan ──────────────────────────
+  // Global feature flag (kill-switch). When false (default), all new active-
+  // scan requests are rejected (existing jobs unaffected). See §7.4 / §8.
+  ACTIVE_SCAN_ENABLED: booleanString.default(false),
+
+  // Shared secret the isolated SkyNet worker presents in `X-Worker-Secret`
+  // on the internal results endpoints (§5.2). Constant-time compared. Empty
+  // by default; the internal endpoints fail-closed (reject all) when unset.
+  ACTIVE_SCAN_WORKER_SECRET: z.string().optional().default(''),
+
+  // Secret used to sign the short-lived SSE stream tokens (§5.3). If empty,
+  // falls back to JWT_ACCESS_SECRET (so the feature works out of the box).
+  SCAN_STREAM_TOKEN_SECRET: z.string().optional().default(''),
+
+  // Stream-token TTL in seconds (EventSource auth; default 10 min).
+  SCAN_STREAM_TOKEN_TTL_SEC: positiveInt.default(600),
+
+  // Days a verified target stays valid before re-verification is required.
+  ACTIVE_SCAN_VERIFY_TTL_DAYS: positiveInt.default(90),
+
+  // Per-job wall-clock timeout (seconds) the worker honors. Surfaced here so
+  // the backend can document/forward it; default 30 min.
+  ACTIVE_SCAN_JOB_TIMEOUT_SEC: positiveInt.default(1800),
+
+  // Default scope params handed to the worker (the saas profile also clamps).
+  ACTIVE_SCAN_DEFAULT_MAX_HOSTS: positiveInt.default(4),
+  ACTIVE_SCAN_DEFAULT_RATE: positiveInt.default(300),
+
   // Master kill-switch for plan-cap enforcement. When 'false' (default),
   // every plan-related guard short-circuits to allow the request. Flip to
   // 'true' in a separate deploy after Step 6 of the rollout plan
