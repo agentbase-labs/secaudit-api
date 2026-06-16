@@ -41,6 +41,13 @@ export interface IssuedTokens {
   accessToken: string;
   refreshToken: string;
   refreshExpiresAt: Date;
+  /**
+   * When true, the controller should NOT (re)set the refresh cookie for this
+   * response. Used only by the refresh() grace-window retry path, where the
+   * client already holds a valid successor cookie and the presented (stale)
+   * token must not overwrite it. Absent/false on every normal path.
+   */
+  skipRefreshCookie?: boolean;
 }
 
 @Injectable()
@@ -411,7 +418,82 @@ export class AuthService {
       });
     }
     if (row.revokedAt || row.replacedByJti) {
-      // Reuse of a rotated token → compromise → revoke family
+      // The presented token's row has already been rotated. This is normally a
+      // reuse/compromise signal. BUT concurrent /auth/refresh calls (React
+      // StrictMode double-mounts, duplicated tabs, network retries) can fire
+      // two near-simultaneous refreshes of the *same* token: the first rotates
+      // it, the second arrives microseconds later presenting the now-rotated
+      // token. To avoid spuriously revoking the whole family on that benign
+      // race, we allow a short grace window where the immediately-prior,
+      // hash-matching token is treated as a retry and converges on the
+      // existing successor.
+      //
+      // Strict reuse-detection still fires for anything outside this narrow
+      // case: old tokens, hash mismatches, missing/expired successors, or a
+      // rotation older than the grace window.
+      const graceMs = this.cfg.refreshRotationGraceSec * 1000;
+      const rotatedAt = row.revokedAt?.getTime() ?? null;
+      const withinGrace =
+        rotatedAt !== null && Date.now() - rotatedAt <= graceMs;
+      const hashMatches = sha256(refreshToken) === row.tokenHash;
+
+      if (withinGrace && hashMatches && row.replacedByJti) {
+        const successor = await this.rtRepo.findOne({
+          where: { jti: row.replacedByJti },
+        });
+        const successorValid =
+          !!successor &&
+          !successor.revokedAt &&
+          !successor.replacedByJti &&
+          successor.expiresAt.getTime() >= Date.now();
+
+        if (successor && successorValid) {
+          // Benign concurrent retry. Re-issue a fresh access token for the
+          // user. We do NOT rotate again and do NOT revoke the family, so
+          // repeated concurrent calls converge on the single existing
+          // successor jti instead of forking the family.
+          const user = await this.users.requireById(payload.sub);
+          if (user.disabled) {
+            throw new ForbiddenException({
+              error: ApiErrorCodes.ACCOUNT_DISABLED,
+              message: 'Account disabled',
+            });
+          }
+          const accessPayload: AccessTokenPayload = {
+            sub: user.id,
+            role: user.role,
+            emailVerified: user.emailVerified,
+            jti: successor.jti,
+            email: user.email,
+          };
+          const accessToken = await this.jwt.signAsync(accessPayload, {
+            secret: this.cfg.get('JWT_ACCESS_SECRET'),
+            expiresIn: this.cfg.get('JWT_ACCESS_TTL'),
+          });
+          await this.audit.record({
+            actorUserId: user.id,
+            action: 'user.refresh_grace_retry',
+          });
+          // The successor's signed refresh JWT is not stored (only its hash),
+          // so we cannot re-mint it here. We therefore signal the controller
+          // to LEAVE the existing refresh cookie untouched: the winning
+          // concurrent call already set the valid successor cookie, and
+          // regressing it to this stale token would lock the client out once
+          // the grace window elapses. Skipping the cookie write keeps the
+          // client on the live forward token while still handing back a fresh
+          // access token. The public response body ({ accessToken, user })
+          // is unchanged.
+          return {
+            user: this.users.toPublic(user),
+            accessToken,
+            refreshToken,
+            refreshExpiresAt: successor.expiresAt,
+            skipRefreshCookie: true,
+          };
+        }
+      }
+
+      // Genuine reuse / compromise → revoke family.
       await this.rtRepo.update({ family: row.family }, { revokedAt: new Date() });
       await this.audit.record({
         actorUserId: payload.sub,

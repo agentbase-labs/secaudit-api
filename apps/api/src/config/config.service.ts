@@ -69,6 +69,16 @@ export class AppConfigService {
     return explicit.length > 0 ? explicit : this.get('JWT_ACCESS_SECRET');
   }
 
+  /**
+   * Grace window (seconds) during which a just-rotated refresh token may be
+   * re-presented (e.g. by a concurrent /auth/refresh from StrictMode, a
+   * duplicated tab, or a network retry) and treated as a benign retry — the
+   * existing successor is re-issued instead of revoking the token family.
+   */
+  get refreshRotationGraceSec(): number {
+    return this.get('REFRESH_ROTATION_GRACE_SEC');
+  }
+
   get streamTokenTtlSec(): number {
     return this.get('SCAN_STREAM_TOKEN_TTL_SEC');
   }

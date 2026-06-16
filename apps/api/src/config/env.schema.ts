@@ -45,6 +45,16 @@ export const EnvSchema = z.object({
   JWT_ACCESS_TTL: z.string().default('15m'),
   JWT_REFRESH_TTL: z.string().default('7d'),
 
+  // Grace window (seconds) for refresh-token rotation. If the *immediately
+  // prior* refresh token (hash-matching, just rotated) is presented again
+  // within this window, it is treated as a benign concurrent retry — the
+  // existing successor is re-issued instead of tripping reuse-detection and
+  // revoking the whole token family. Hardens against React StrictMode
+  // double-mounts, tab duplication, and network retries firing two
+  // near-simultaneous /auth/refresh calls. Genuine reuse (older/mismatched/
+  // stale tokens) still revokes the family. Default 10s.
+  REFRESH_ROTATION_GRACE_SEC: positiveInt.default(10),
+
   CREDS_ENCRYPTION_KEY: z
     .string()
     .min(32, 'CREDS_ENCRYPTION_KEY must be a 32-byte base64 string')

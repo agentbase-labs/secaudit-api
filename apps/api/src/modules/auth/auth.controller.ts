@@ -122,7 +122,12 @@ export class AuthController {
       });
     }
     const { user, ...tokens } = await this.auth.refresh(cookie);
-    setRefreshCookie(res, tokens.refreshToken, tokens.refreshExpiresAt);
+    // The grace-window retry path (concurrent /auth/refresh) leaves the
+    // existing successor cookie in place rather than regressing it to the
+    // stale presented token; honor that signal. Every normal path sets it.
+    if (!tokens.skipRefreshCookie) {
+      setRefreshCookie(res, tokens.refreshToken, tokens.refreshExpiresAt);
+    }
     return { accessToken: tokens.accessToken, user };
   }
 
