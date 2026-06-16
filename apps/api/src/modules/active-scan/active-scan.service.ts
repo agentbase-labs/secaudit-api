@@ -6,6 +6,7 @@ import {
   Logger,
   MessageEvent,
   NotFoundException,
+  UnprocessableEntityException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { DataSource, Repository } from 'typeorm';
@@ -18,6 +19,7 @@ import { promisify } from 'util';
 import {
   ApiErrorCodes,
   ACTIVE_SCAN_ACTIVE_STATUSES,
+  ACTIVE_SCAN_AUTHORIZATION_VERSION,
 } from '@cs-platform/shared';
 import type {
   ActiveScanFinding,
@@ -35,6 +37,7 @@ import type {
   WorkerClaimResponse,
   WorkerFinding,
   WorkerProgressBody,
+  AdminVerifiedTargetRow,
 } from '@cs-platform/shared';
 
 import { AppConfigService } from '../../config/config.service';
@@ -348,12 +351,52 @@ export class ActiveScanService {
       });
     }
 
+    const jobId = await this.createAndEnqueueJob({
+      userId,
+      targetId,
+      planSlug,
+      authorizationVersion,
+      ip,
+    });
+
+    await this.audit.record({
+      actorUserId: userId,
+      action: 'active_scan.requested',
+      targetType: 'active_scan_job',
+      targetId: jobId,
+      ip,
+      meta: { targetId, planAtRequest: planSlug, authorizationVersion },
+    });
+
+    return { jobId, status: 'queued' };
+  }
+
+  /**
+   * Shared job-creation + enqueue logic used by BOTH the user `requestScan`
+   * path and the admin trigger (`adminRequestScan`). Inside one transaction it:
+   *   - locks + re-checks the target is `verified` and non-expired (§3.4),
+   *   - reserves monthly quota atomically UNLESS `bypassPlanCaps` (admin authority),
+   *   - creates the `queued` ActiveScanJob for the TARGET OWNER (never the admin).
+   * Then enqueues `active_scan.run` for the worker (outside the tx). Returns the
+   * new jobId. Verification is NEVER bypassed (the worker re-asserts it too).
+   */
+  private async createAndEnqueueJob(opts: {
+    userId: string;
+    targetId: string;
+    planSlug: string;
+    authorizationVersion: string | null;
+    ip: string | null;
+    bypassPlanCaps?: boolean;
+  }): Promise<string> {
+    const { userId, targetId, planSlug, authorizationVersion, ip } = opts;
+    const bypassPlanCaps = opts.bypassPlanCaps === true;
     const enforced = this.cfg.get('PLAN_CAPS_ENFORCED') === 'true';
     const defaultMaxHosts = this.cfg.activeScanDefaultMaxHosts;
     const defaultRate = this.cfg.activeScanDefaultRate;
 
     const jobId = await this.dataSource.transaction(async (manager) => {
-      // Lock + re-check target verification + expiry (§3.4).
+      // Lock + re-check target verification + expiry (§3.4). Verification is
+      // ALWAYS enforced — admin authority bypasses plan caps, never ownership.
       const target = await manager.findOne(VerifiedTargetEntity, {
         where: { id: targetId, userId },
       });
@@ -379,8 +422,11 @@ export class ActiveScanService {
         });
       }
 
-      // Atomic monthly quota reservation (rolls back on cap-exceeded).
-      await this.caps.atomicIncrementActiveScanAndCheck(manager, userId, enforced);
+      // Atomic monthly quota reservation (rolls back on cap-exceeded). Skipped
+      // entirely on the admin path (bypassPlanCaps) — admin authority.
+      if (!bypassPlanCaps) {
+        await this.caps.atomicIncrementActiveScanAndCheck(manager, userId, enforced);
+      }
 
       const scope: ActiveScanScope = {
         allowlistHosts: [target.hostname],
@@ -420,16 +466,176 @@ export class ActiveScanService {
       this.logger.error(`enqueue failed for job ${jobId}: ${(e as Error).message}`);
     }
 
+    return jobId;
+  }
+
+  // ════════════════════════════ Admin ══════════════════════════════════════
+
+  /**
+   * Admin: list verified targets across ALL users, joined with the owning
+   * user's email + name. Supports optional `status` / `userId` filters and
+   * pagination. Ordered by createdAt DESC.
+   */
+  async adminListTargets(opts: {
+    status?: string;
+    userId?: string;
+    page?: number;
+    pageSize?: number;
+  }): Promise<{
+    items: AdminVerifiedTargetRow[];
+    page: number;
+    pageSize: number;
+    total: number;
+  }> {
+    const take = Math.min(100, Math.max(1, Number(opts.pageSize) || 50));
+    const page = Math.max(1, Number(opts.page) || 1);
+    const skip = (page - 1) * take;
+
+    const qb = this.targets
+      .createQueryBuilder('t')
+      .leftJoin('users', 'u', 'u."id" = t."userId"')
+      .select([
+        't.id AS id',
+        't."userId" AS "userId"',
+        'u.email AS "userEmail"',
+        'u."fullName" AS "userFullName"',
+        'u."companyName" AS "userCompanyName"',
+        't.hostname AS hostname',
+        't.status AS status',
+        't."verifiedMethod" AS "verifiedMethod"',
+        't."verifiedAt" AS "verifiedAt"',
+        't."expiresAt" AS "expiresAt"',
+        't."lastCheckedAt" AS "lastCheckedAt"',
+        't."createdAt" AS "createdAt"',
+      ])
+      .orderBy('t."createdAt"', 'DESC')
+      .limit(take)
+      .offset(skip);
+
+    const countQb = this.targets.createQueryBuilder('t');
+    if (opts.status) {
+      qb.andWhere('t.status = :status', { status: opts.status });
+      countQb.andWhere('t.status = :status', { status: opts.status });
+    }
+    if (opts.userId) {
+      qb.andWhere('t."userId" = :uid', { uid: opts.userId });
+      countQb.andWhere('t."userId" = :uid', { uid: opts.userId });
+    }
+
+    const [rows, total] = await Promise.all([
+      qb.getRawMany<{
+        id: string;
+        userId: string;
+        userEmail: string | null;
+        userFullName: string | null;
+        userCompanyName: string | null;
+        hostname: string;
+        status: string;
+        verifiedMethod: string | null;
+        verifiedAt: Date | null;
+        expiresAt: Date | null;
+        lastCheckedAt: Date | null;
+        createdAt: Date;
+      }>(),
+      countQb.getCount(),
+    ]);
+
+    const items: AdminVerifiedTargetRow[] = rows.map((r) => ({
+      id: r.id,
+      userId: r.userId,
+      userEmail: r.userEmail,
+      userFullName: r.userFullName,
+      userCompanyName: r.userCompanyName,
+      hostname: r.hostname,
+      status: r.status as VerifiedTarget['status'],
+      verifiedMethod: (r.verifiedMethod as VerifiedTarget['verifiedMethod']) ?? null,
+      verifiedAt: r.verifiedAt ? new Date(r.verifiedAt).toISOString() : null,
+      expiresAt: r.expiresAt ? new Date(r.expiresAt).toISOString() : null,
+      lastCheckedAt: r.lastCheckedAt ? new Date(r.lastCheckedAt).toISOString() : null,
+      createdAt: new Date(r.createdAt).toISOString(),
+    }));
+
+    return { items, page, pageSize: take, total };
+  }
+
+  /**
+   * Admin: trigger a deep active scan on a user's already-verified target.
+   *
+   * - The scan job is created FOR THE TARGET OWNER (userId = target.userId),
+   *   never the admin. The worker contract (queue `active_scan.run`,
+   *   payload `{ jobId }`) is unchanged.
+   * - Plan caps are BYPASSED (admin authority); the user-side ActiveScanPlanGuard
+   *   is not applied and no quota is reserved.
+   * - Verification is NOT bypassed: the target must be `verified` + non-expired.
+   * - Authorization (option a): the user flow only ever captures authorization
+   *   per-scan-request (no stored attestation on the user/target), so we attach
+   *   the CURRENT authorization version (ACTIVE_SCAN_AUTHORIZATION_VERSION) as the
+   *   authoritative attestation, reusing the user's proven ownership, and record
+   *   that fact in the audit trail.
+   */
+  async adminRequestScan(
+    adminId: string,
+    targetId: string,
+    ip: string | null,
+  ): Promise<{ jobId: string; status: ActiveScanJobStatus; targetUserId: string }> {
+    if (!this.cfg.activeScanEnabled) {
+      throw new ForbiddenException({
+        error: ApiErrorCodes.FORBIDDEN,
+        message: 'Active scanning is currently disabled',
+      });
+    }
+
+    // Pre-load the target to surface a precise 404 / not-verified error and to
+    // resolve the owning userId BEFORE the (owner-scoped) job-creation tx.
+    const target = await this.targets.findOne({ where: { id: targetId } });
+    if (!target) {
+      throw new NotFoundException({
+        error: ApiErrorCodes.NOT_FOUND,
+        message: 'Target not found',
+      });
+    }
+    const expired =
+      target.expiresAt != null && target.expiresAt.getTime() < Date.now();
+    if (target.status !== 'verified' || expired) {
+      throw new UnprocessableEntityException({
+        error: ApiErrorCodes.TARGET_NOT_VERIFIED,
+        message: expired
+          ? 'Target verification has expired — the user must re-verify'
+          : 'Target is not verified',
+      });
+    }
+
+    // Record the TARGET OWNER's current plan as planAtRequest (legal/billing
+    // evidence belongs to the user the job runs for, not the admin).
+    const { planId: planSlug } = await this.caps.getCaps(target.userId);
+
+    const authorizationVersion = ACTIVE_SCAN_AUTHORIZATION_VERSION;
+    const jobId = await this.createAndEnqueueJob({
+      userId: target.userId,
+      targetId: target.id,
+      planSlug,
+      authorizationVersion,
+      ip,
+      bypassPlanCaps: true,
+    });
+
     await this.audit.record({
-      actorUserId: userId,
-      action: 'active_scan.requested',
+      actorUserId: adminId,
+      action: 'active_scan.admin_triggered',
       targetType: 'active_scan_job',
       targetId: jobId,
       ip,
-      meta: { targetId, planAtRequest: planSlug, authorizationVersion },
+      meta: {
+        targetUserId: target.userId,
+        targetId: target.id,
+        hostname: target.hostname,
+        authorizationVersion,
+        authorizationReused: true,
+        bypassPlanCaps: true,
+      },
     });
 
-    return { jobId, status: 'queued' };
+    return { jobId, status: 'queued', targetUserId: target.userId };
   }
 
   // ════════════════════════════ Reads ══════════════════════════════════════

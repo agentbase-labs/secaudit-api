@@ -20,6 +20,7 @@ export const ApiErrorCodes = {
   NOT_FOUND: 'not_found',
   REQUEST_LOCKED: 'request_locked',
   INVALID_TRANSITION: 'invalid_transition',
+  TARGET_NOT_VERIFIED: 'target_not_verified',
   // rate
   THROTTLED: 'throttled',
   // server

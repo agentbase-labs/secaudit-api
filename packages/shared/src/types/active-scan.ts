@@ -19,6 +19,16 @@ import type { AutoScanSeverity, AutoScanFindingCounts } from './auto-scan';
 export type VerifiedTargetStatus = 'pending' | 'verified' | 'expired' | 'revoked';
 export type VerifiedTargetMethod = 'dns_txt' | 'http_file';
 
+/**
+ * Current active-scan authorization attestation version. The user flow captures
+ * a user-supplied `authorizationVersion` per scan request (legal evidence on the
+ * job). When an admin triggers a scan on a user's already-verified target
+ * (reusing the user's proven ownership), the admin path attaches THIS version as
+ * the authoritative current attestation. Bump on any material change to the
+ * authorization/ToS text.
+ */
+export const ACTIVE_SCAN_AUTHORIZATION_VERSION = 'v1' as const;
+
 /** Public DTO for a verified target row (no internal columns leaked). */
 export interface VerifiedTarget {
   id: string;
@@ -171,6 +181,48 @@ export interface StreamTokenResult {
   streamToken: string;
   /** Seconds until the token expires. */
   expiresIn: number;
+}
+
+// ───────────────────────────── Admin surface ────────────────────────────────
+
+/**
+ * A verified target enriched with its owning user's identity. Returned by
+ * `GET /admin/active-scan/targets` so an admin can pick a user-verified target
+ * to trigger a deep scan against. All timestamps are ISO strings.
+ */
+export interface AdminVerifiedTargetRow {
+  id: string;
+  userId: string;
+  userEmail: string | null;
+  userFullName: string | null;
+  userCompanyName: string | null;
+  hostname: string;
+  status: VerifiedTargetStatus;
+  verifiedMethod: VerifiedTargetMethod | null;
+  verifiedAt: string | null;
+  expiresAt: string | null;
+  lastCheckedAt: string | null;
+  createdAt: string;
+}
+
+/** Returned by `GET /admin/active-scan/targets`. */
+export interface AdminListVerifiedTargetsResult {
+  items: AdminVerifiedTargetRow[];
+  page: number;
+  pageSize: number;
+  total: number;
+}
+
+/**
+ * Returned by `POST /admin/active-scan/scans`. Matches the user `RequestScanResult`
+ * shape (jobId + status + streamToken so the frontend can open the SSE live view)
+ * plus `targetUserId` so the admin UI knows which user the job belongs to.
+ */
+export interface AdminRequestScanResult {
+  jobId: string;
+  status: ActiveScanJobStatus;
+  streamToken: string;
+  targetUserId: string;
 }
 
 // ───────────────────────────── Findings ─────────────────────────────────────

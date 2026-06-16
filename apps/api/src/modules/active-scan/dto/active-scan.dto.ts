@@ -5,6 +5,7 @@ import {
   IsObject,
   IsOptional,
   IsString,
+  IsUUID,
   Max,
   MaxLength,
   Min,
@@ -12,6 +13,7 @@ import {
 import { Type } from 'class-transformer';
 
 const VERIFY_METHODS = ['dns_txt', 'http_file'] as const;
+const VERIFIED_TARGET_STATUSES = ['pending', 'verified', 'expired', 'revoked'] as const;
 const FINDING_SEVERITIES = ['info', 'low', 'medium', 'high', 'critical'] as const;
 const COMPLETE_STATUSES = ['completed', 'failed'] as const;
 
@@ -56,6 +58,37 @@ export class ListScansQueryDto {
   @Min(1)
   @Max(100)
   pageSize?: number;
+}
+
+// ───────────────────────────── Admin DTOs ──────────────────────────────────
+
+export class AdminListTargetsQueryDto {
+  @IsOptional()
+  @IsString()
+  @IsIn(VERIFIED_TARGET_STATUSES)
+  status?: (typeof VERIFIED_TARGET_STATUSES)[number];
+
+  @IsOptional()
+  @IsUUID()
+  userId?: string;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  page?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(100)
+  pageSize?: number;
+}
+
+export class AdminRequestScanDto {
+  @IsUUID()
+  targetId!: string;
 }
 
 // ─────────────────────── Internal worker→backend DTOs ───────────────────────
