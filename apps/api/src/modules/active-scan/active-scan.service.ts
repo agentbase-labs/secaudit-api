@@ -6,7 +6,6 @@ import {
   Logger,
   MessageEvent,
   NotFoundException,
-  UnprocessableEntityException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { DataSource, Repository } from 'typeorm';
@@ -375,10 +374,21 @@ export class ActiveScanService {
    * Shared job-creation + enqueue logic used by BOTH the user `requestScan`
    * path and the admin trigger (`adminRequestScan`). Inside one transaction it:
    *   - locks + re-checks the target is `verified` and non-expired (§3.4),
+   *     UNLESS `bypassOwnership` (admin authority override) is set,
    *   - reserves monthly quota atomically UNLESS `bypassPlanCaps` (admin authority),
    *   - creates the `queued` ActiveScanJob for the TARGET OWNER (never the admin).
    * Then enqueues `active_scan.run` for the worker (outside the tx). Returns the
-   * new jobId. Verification is NEVER bypassed (the worker re-asserts it too).
+   * new jobId.
+   *
+   * SECURITY: On the normal USER path neither bypass flag is set, so the target
+   * MUST be `verified` + non-expired here AND the worker re-asserts ownership
+   * live (TOCTOU defense). `bypassOwnership` is ONLY ever passed by the admin
+   * trigger path (adminRequestScan); it lets an admin manually authorize a deep
+   * scan on an unverified/expired target. When set we still REQUIRE the target
+   * to exist + belong to the owner (we never fabricate a target), we just skip
+   * the `verified`/expiry rejections, mark the job `ownershipBypassed=true`, and
+   * the worker will then skip its live ownership re-assertion. The admin id is
+   * recorded on the job as the authorization of record.
    */
   private async createAndEnqueueJob(opts: {
     userId: string;
@@ -387,9 +397,15 @@ export class ActiveScanService {
     authorizationVersion: string | null;
     ip: string | null;
     bypassPlanCaps?: boolean;
+    /** Admin-only ownership override. NEVER set on the user path. */
+    bypassOwnership?: boolean;
+    /** Admin user id that authorized the ownership bypass (audit of record). */
+    authorizedByAdminId?: string | null;
   }): Promise<string> {
     const { userId, targetId, planSlug, authorizationVersion, ip } = opts;
     const bypassPlanCaps = opts.bypassPlanCaps === true;
+    const bypassOwnership = opts.bypassOwnership === true;
+    const authorizedByAdminId = opts.authorizedByAdminId ?? null;
     const enforced = this.cfg.get('PLAN_CAPS_ENFORCED') === 'true';
     const defaultMaxHosts = this.cfg.activeScanDefaultMaxHosts;
     const defaultRate = this.cfg.activeScanDefaultRate;
@@ -406,20 +422,26 @@ export class ActiveScanService {
           message: 'Target not found',
         });
       }
-      if (target.status !== 'verified') {
-        throw new BadRequestException({
-          error: ApiErrorCodes.VALIDATION_ERROR,
-          message: 'Target is not verified',
-        });
-      }
-      if (target.expiresAt && target.expiresAt.getTime() < Date.now()) {
-        // Mark expired so the UI prompts re-verification.
-        target.status = 'expired';
-        await manager.save(target);
-        throw new BadRequestException({
-          error: ApiErrorCodes.VALIDATION_ERROR,
-          message: 'Target verification has expired — please re-verify',
-        });
+      // SECURITY: ownership (verified + non-expired) is enforced here on the
+      // USER path and is ONLY skipped when an admin explicitly authorized a
+      // bypass (bypassOwnership). We never mutate target.status in the bypass
+      // case (the user's verification state is left untouched).
+      if (!bypassOwnership) {
+        if (target.status !== 'verified') {
+          throw new BadRequestException({
+            error: ApiErrorCodes.VALIDATION_ERROR,
+            message: 'Target is not verified',
+          });
+        }
+        if (target.expiresAt && target.expiresAt.getTime() < Date.now()) {
+          // Mark expired so the UI prompts re-verification.
+          target.status = 'expired';
+          await manager.save(target);
+          throw new BadRequestException({
+            error: ApiErrorCodes.VALIDATION_ERROR,
+            message: 'Target verification has expired — please re-verify',
+          });
+        }
       }
 
       // Atomic monthly quota reservation (rolls back on cap-exceeded). Skipped
@@ -445,7 +467,12 @@ export class ActiveScanService {
         targetId: target.id,
         status: 'queued' as ActiveScanJobStatus,
         verifiedHost: target.hostname,
-        verifyTokenSnapshot: target.token,
+        // Snapshot the token if present. On an admin ownership bypass the target
+        // may be unverified and have no/empty token — that's fine, the worker
+        // skips ownership re-assertion entirely for bypassed jobs.
+        verifyTokenSnapshot: target.token ?? '',
+        ownershipBypassed: bypassOwnership,
+        authorizedByAdminId,
         planAtRequest: planSlug,
         profile: 'saas',
         scope,
@@ -566,7 +593,13 @@ export class ActiveScanService {
    *   payload `{ jobId }`) is unchanged.
    * - Plan caps are BYPASSED (admin authority); the user-side ActiveScanPlanGuard
    *   is not applied and no quota is reserved.
-   * - Verification is NOT bypassed: the target must be `verified` + non-expired.
+   * - Ownership/verification is ALSO bypassed (admin authority override): the
+   *   target need NOT be `verified` and may be expired. The admin's manual
+   *   action is the authorization of record. The job is flagged
+   *   `ownershipBypassed=true` + stamped with the admin id, and the worker will
+   *   SKIP its live ownership re-assertion for such jobs. The target must still
+   *   EXIST (we never fabricate one) so we know the exact hostname to scope to.
+   *   The normal USER path keeps full verification enforcement at BOTH layers.
    * - Authorization (option a): the user flow only ever captures authorization
    *   per-scan-request (no stored attestation on the user/target), so we attach
    *   the CURRENT authorization version (ACTIVE_SCAN_AUTHORIZATION_VERSION) as the
@@ -585,8 +618,14 @@ export class ActiveScanService {
       });
     }
 
-    // Pre-load the target to surface a precise 404 / not-verified error and to
-    // resolve the owning userId BEFORE the (owner-scoped) job-creation tx.
+    // Pre-load the target to surface a precise 404 and to resolve the owning
+    // userId BEFORE the (owner-scoped) job-creation tx.
+    //
+    // SECURITY: the admin path INTENTIONALLY does NOT reject unverified/expired
+    // targets — an admin may manually authorize a deep scan on a target the user
+    // has not verified (or whose verification lapsed). The admin's action is the
+    // authorization of record (audited below + flagged on the job). We keep ONLY
+    // the "target must exist" guard so we never fabricate a hostname to scan.
     const target = await this.targets.findOne({ where: { id: targetId } });
     if (!target) {
       throw new NotFoundException({
@@ -594,16 +633,9 @@ export class ActiveScanService {
         message: 'Target not found',
       });
     }
-    const expired =
-      target.expiresAt != null && target.expiresAt.getTime() < Date.now();
-    if (target.status !== 'verified' || expired) {
-      throw new UnprocessableEntityException({
-        error: ApiErrorCodes.TARGET_NOT_VERIFIED,
-        message: expired
-          ? 'Target verification has expired — the user must re-verify'
-          : 'Target is not verified',
-      });
-    }
+    const unverified =
+      target.status !== 'verified' ||
+      (target.expiresAt != null && target.expiresAt.getTime() < Date.now());
 
     // Record the TARGET OWNER's current plan as planAtRequest (legal/billing
     // evidence belongs to the user the job runs for, not the admin).
@@ -617,6 +649,11 @@ export class ActiveScanService {
       authorizationVersion,
       ip,
       bypassPlanCaps: true,
+      // Admin authority override: skip ownership (verified/expiry) enforcement
+      // and flag the job so the worker skips live ownership re-assertion. The
+      // admin id becomes the authorization of record on the job.
+      bypassOwnership: true,
+      authorizedByAdminId: adminId,
     });
 
     await this.audit.record({
@@ -632,6 +669,12 @@ export class ActiveScanService {
         authorizationVersion,
         authorizationReused: true,
         bypassPlanCaps: true,
+        // Audit of record for the ownership override: who bypassed, the host,
+        // and whether the target was actually unverified/expired at the time.
+        ownershipBypassed: true,
+        authorizedByAdminId: adminId,
+        targetStatusAtTrigger: target.status,
+        targetWasUnverified: unverified,
       },
     });
 
@@ -764,6 +807,10 @@ export class ActiveScanService {
       verifiedHost: job.verifiedHost,
       verifyTokenSnapshot: job.verifyTokenSnapshot,
       verifiedMethod: target?.verifiedMethod ?? null,
+      // SECURITY: tells the worker this job was admin-authorized against an
+      // unverified/expired target — it MUST skip live ownership re-assertion.
+      // Defaults false for every normal user job (full TOCTOU re-check applies).
+      ownershipBypassed: job.ownershipBypassed === true,
       scope: job.scope,
     };
   }

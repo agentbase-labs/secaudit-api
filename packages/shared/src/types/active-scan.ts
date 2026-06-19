@@ -355,6 +355,13 @@ export interface WorkerClaimResponse {
   verifiedHost: string;
   verifyTokenSnapshot: string;
   verifiedMethod: VerifiedTargetMethod | null;
+  /**
+   * SECURITY: true when an admin manually authorized this scan against an
+   * unverified/expired target (admin authority override). The worker MUST skip
+   * live ownership re-assertion (TOCTOU re-check) for such jobs. Always false
+   * for normal user-requested jobs, which stay fully ownership-enforced.
+   */
+  ownershipBypassed: boolean;
   scope: ActiveScanScope;
 }
 

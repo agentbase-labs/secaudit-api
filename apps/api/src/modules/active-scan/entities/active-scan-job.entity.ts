@@ -115,6 +115,20 @@ export class ActiveScanJobEntity {
   @Column({ type: 'varchar', length: 64, nullable: true })
   requestIp!: string | null;
 
+  // ── Admin ownership-bypass marker (SECURITY) ──
+  // When TRUE this job was triggered MANUALLY by an admin against a target that
+  // was NOT verified (or whose verification had expired). The admin's action is
+  // the authorization of record. The worker MUST treat this as authorization to
+  // skip live ownership re-assertion (reassert_ownership / TOCTOU re-check),
+  // because there may be no valid ownership token to prove. This is NEVER set on
+  // the normal user path — verified-target enforcement stays 100% intact there.
+  @Column({ type: 'boolean', default: false })
+  ownershipBypassed!: boolean;
+
+  /** The admin user id that authorized the ownership bypass (audit of record). */
+  @Column({ type: 'uuid', nullable: true })
+  authorizedByAdminId!: string | null;
+
   @CreateDateColumn({ type: 'timestamptz' })
   createdAt!: Date;
 
